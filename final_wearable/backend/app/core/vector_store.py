@@ -37,8 +37,6 @@ embedding_cache = {}
 def embed_text(text: str):
     """
     OpenAI 임베딩 생성 (text-embedding-3-small)
-    - 비용/속도 균형
-    - embedding_cache와 함께 사용
     """
     client = get_openai_client()
     resp = client.embeddings.create(
@@ -93,9 +91,9 @@ def save_daily_summary(summary: dict, user_id: str):
     metadata = {
         "user_id": user_id,
         "date": date,
-        "source": summary["raw"].get("source", "unknown"),
+        "source": summary.get("raw", {}).get("source", "unknown"),
         "summary_text": summary.get("summary_text", ""),
-        "summary_json": json.dumps(summary, ensure_ascii=False),
+        "summary_json": summary_json,
     }
 
     # 4) Upsert 저장 (add → upsert 변경)
@@ -128,14 +126,14 @@ def search_similar_summaries(query_dict: dict, user_id: str, top_k=3):
     # 검색 (user_id 기준으로 filtering)
     result = collection.query(
         query_embeddings=[q_vec],
-        n_results=top_k * 3,  # 충분히 넉넉히 가져오기
+        n_results=top_k,
         where={"user_id": user_id},
     )
 
-    ids = result["ids"][0]
-    docs = result["documents"][0]
-    metas = result["metadatas"][0]
-    distances = result["distances"][0]
+    ids = result.get("ids", [[]])[0]
+    docs = result.get("documents", [[]])[0]
+    metas = result.get("metadatas", [[]])[0]
+    distances = result.get("distances", [[]])[0]
 
     ranked = []
     for doc_id, doc_text, meta, dist in zip(ids, docs, metas, distances):
@@ -162,4 +160,4 @@ def search_similar_summaries(query_dict: dict, user_id: str, top_k=3):
     # 유사도 내림차순 정렬 후 top_k 반환
     ranked = sorted(ranked, key=lambda x: x["similarity"], reverse=True)
 
-    return {"similar_days": ranked[:top_k], "count": len(ranked[:top_k])}
+    return {"similar_days": ranked, "count": len(ranked)}

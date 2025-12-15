@@ -12,7 +12,7 @@ def parse_db_json_to_raw_data(db_json: dict) -> dict:
 
     ※ preprocess()에서 정규화되므로 여기서는 원본 값만 추출한다.
     """
-    print("--- DEBUG: DB Raw Data Parsing (REAL SAMSUNG ZIP) ---")
+    # print("--- DEBUG: DB Raw Data Parsing (REAL SAMSUNG ZIP) ---")
 
     if not db_json:
         return {}

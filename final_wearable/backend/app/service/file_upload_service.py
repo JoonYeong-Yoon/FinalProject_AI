@@ -39,18 +39,6 @@ class FileUploadService:
             except Exception as e:
                 raise HTTPException(500, f"파일 저장 실패: {str(e)}")
 
-            # ★ ZIP 파일 내부 구조 출력 ★
-            try:
-                import zipfile
-
-                with zipfile.ZipFile(temp_path, "r") as z:
-                    print("\n===== ZIP FILE CONTENTS =====")
-                    for name in z.namelist():
-                        print(" -", name)
-                    print("================================\n")
-            except:
-                print("ZIP 파일이 아니거나, 열 수 없습니다.")
-
             # 3) ZIP 또는 DB 파일 판단 및 처리
             if file.filename.lower().endswith(".zip"):
                 db_path = extract_zip_to_temp(temp_path)
@@ -64,9 +52,6 @@ class FileUploadService:
 
             # 4) DB 파일 → JSON 변환
             raw_db_json = db_to_json(db_path)
-            print("\n======= DB JSON RAW OUTPUT =======")
-            print(json.dumps(raw_db_json, indent=2, ensure_ascii=False))
-            print("==================================\n")
 
             # 5) JSON → raw 지표 추출(db_parser)
             raw_data_for_llm = parse_db_json_to_raw_data(raw_db_json)

@@ -1,17 +1,34 @@
+"""
+LLM Analysis Engine - v7 (Option C + 개선된 Fallback + 상세 분석 텍스트)
+
+변경사항:
+1. Option C: 안전 모드 + LLM 결과 검증
+2. 개선된 Fallback: 10분/30분/60분 모두 지원
+3. build_analysis_text: 상세한 분석 텍스트 (근거 포함)
+"""
+
 import os
 import json
-import textwrap
-
 from dotenv import load_dotenv
 from openai import OpenAI
-from app.config import LLM_MODEL_MAIN, LLM_TEMPERATURE, LLM_MAX_TOKENS
+from app.config import LLM_MODEL_MAIN, LLM_TEMPERATURE
+from app.core.health_interpreter import (
+    interpret_health_data,
+    build_health_context_for_llm,
+    build_analysis_text,
+    analyze_rag_patterns,
+    recommend_exercise_intensity,
+    calculate_health_score,
+)
 
 load_dotenv()
 client = OpenAI(api_key=os.getenv("OPENAI_API_KEY"))
 
+ANALYSIS_MAX_TOKENS = 1500
+
 
 # ==========================================================
-# 1) 유틸 : 코드블럭 제거
+# 1) 유틸 함수들
 # ==========================================================
 def clean_json_text(text: str) -> str:
     text = text.strip()
@@ -20,9 +37,6 @@ def clean_json_text(text: str) -> str:
     return text
 
 
-# ==========================================================
-# 2) 유틸 : JSON 파싱
-# ==========================================================
 def try_parse_json(text: str):
     try:
         return json.loads(text)
@@ -31,35 +45,328 @@ def try_parse_json(text: str):
 
 
 # ==========================================================
-# 3) 깨진 JSON 자동 복구
+# 2) 데이터 품질 확인
 # ==========================================================
-def repair_json_with_llm(broken_text: str) -> str:
-    fix_prompt = textwrap.dedent(
-        f"""
-    다음 텍스트는 JSON 형식이 잘못되었습니다.
-    형식을 고쳐 **오직 JSON만 반환하세요.**
-    설명 금지, 코드블록 금지.
+def check_data_quality(raw: dict) -> bool:
+    """최소 데이터 품질 확인 - 수면 OR 활동량 중 하나는 있어야 함"""
+    has_sleep = raw.get("sleep_hr", 0) > 0
+    has_activity = raw.get("steps", 0) > 0
+    return has_sleep or has_activity
 
-    잘못된 JSON:
-    {broken_text}
+
+# ==========================================================
+# 3) LLM 결과 검증
+# ==========================================================
+def validate_routine(result: dict, difficulty: str, target_min: int) -> bool:
+    """LLM 결과 검증 - 시간, MET 범위 확인"""
+    try:
+        routine = result.get("ai_recommended_routine", {})
+        items = routine.get("items", [])
+
+        if not items:
+            print("[WARN] 검증 실패: items 비어있음")
+            return False
+
+        # 1) 시간 검증 (±20% 허용)
+        total_sec = 0
+        for item in items:
+            duration = item.get("duration_sec", 30)
+            sets = item.get("set_count", 3)
+            rest = item.get("rest_sec", 15)
+            total_sec += (duration * sets) + (rest * (sets - 1))
+
+        target_sec = target_min * 60
+        if not (target_sec * 0.8 <= total_sec <= target_sec * 1.2):
+            print(f"[WARN] 검증 실패: 시간 {total_sec}초 (목표 {target_sec}±20%)")
+            return False
+
+        # 2) MET 범위 검증
+        met_ranges = {"하": (2.5, 4.5), "중": (3.5, 5.5), "상": (4.5, 9.0)}
+        min_met, max_met = met_ranges.get(difficulty, (3.5, 5.5))
+
+        for item in items:
+            item_met = item.get("met", 0)
+            if not (min_met <= item_met <= max_met):
+                print(f"[WARN] 검증 실패: MET {item_met} (범위 {min_met}-{max_met})")
+                return False
+
+        return True
+
+    except Exception as e:
+        print(f"[ERROR] 검증 중 오류: {str(e)}")
+        return False
+
+
+# ==========================================================
+# 4) 상세 건강 리포트 생성
+# ==========================================================
+def build_detailed_health_analysis(raw: dict) -> str:
+    """상세한 건강 상태 분석 텍스트 생성"""
+
+    interpretation = interpret_health_data(raw)
+    lines = []
+
+    score_info = interpretation["health_score"]
+    lines.append("=" * 50)
+    lines.append("📊 종합 건강 분석 리포트")
+    lines.append("=" * 50)
+    lines.append(f"\n🏅 건강 점수: {score_info['score']}점 / 100점")
+    lines.append(f"   등급: {score_info['grade']} ({score_info['grade_text']})")
+    if score_info.get("factors"):
+        lines.append("   산정 요소:")
+        for factor in score_info["factors"]:
+            lines.append(f"     • {factor}")
+
+    sleep = interpretation["sleep"]
+    lines.append(f"\n😴 수면 분석")
+    lines.append(f"   상태: {sleep.get('level', '데이터 없음')}")
+    lines.append(f"   수면 시간: {raw.get('sleep_hr', 0)}시간")
+    if sleep.get("message"):
+        lines.append(f"   평가: {sleep['message']}")
+
+    activity = interpretation["activity"]
+    lines.append(f"\n🚶 활동량 분석")
+    lines.append(f"   걸음수: {raw.get('steps', 0):,}보")
+    lines.append(f"   활동 레벨: {activity.get('activity_level', 'unknown')}")
+    if activity.get("message"):
+        lines.append(f"   평가: {activity['message']}")
+
+    hr = interpretation["heart_rate"]
+    lines.append(f"\n❤️ 심박수 분석")
+    lines.append(f"   휴식기 심박수: {raw.get('resting_heart_rate', 0)}bpm")
+    lines.append(f"   피트니스 레벨: {hr.get('fitness_level', 'unknown')}")
+
+    exercise_rec = interpretation["exercise_recommendation"]
+    lines.append(f"\n💪 권장 운동 강도: {exercise_rec.get('recommended_level', '중')}")
+
+    lines.append("\n" + "=" * 50)
+
+    return "\n".join(lines)
+
+
+# ==========================================================
+# 5) 개선된 Fallback 루틴 (10분/30분/60분 모두 지원)
+# ==========================================================
+def get_fallback_routine(
+    difficulty_level: str, duration_min: int, raw: dict = None
+) -> dict:
     """
-    )
+    개선된 Fallback 루틴
+    - 모든 시간대 지원 (10분/30분/60분)
+    - 동적 운동 선택 (순환 반복)
+    - 상세 분석 텍스트 포함
+    """
 
-    resp = client.chat.completions.create(
-        model=LLM_MODEL_MAIN,
-        messages=[
-            {"role": "system", "content": "너는 JSON 복원기다. 출력은 JSON ONLY."},
-            {"role": "user", "content": fix_prompt},
+    # ============================================
+    # 난이도별 운동 풀 (MET 범위 엄격 준수)
+    # ============================================
+    exercise_pools = {
+        "하": [
+            {
+                "exercise_name": "standing knee up",
+                "category": [1, 3],
+                "difficulty": 3,
+                "met": 3.8,
+            },
+            {
+                "exercise_name": "hip thrust",
+                "category": [3, 2],
+                "difficulty": 3,
+                "met": 3.5,
+            },
+            {
+                "exercise_name": "standing side crunch",
+                "category": [2, 3],
+                "difficulty": 3,
+                "met": 4.0,
+            },
+            {
+                "exercise_name": "cross lunge",
+                "category": [3, 2],
+                "difficulty": 4,
+                "met": 3.8,
+            },
         ],
-        max_tokens=700,
-        temperature=0.0,
-    )
-    fixed = resp.choices[0].message.content
-    return clean_json_text(fixed)
+        "중": [
+            {"exercise_name": "crunch", "category": [2], "difficulty": 4, "met": 4.5},
+            {
+                "exercise_name": "step forward dynamic lunge",
+                "category": [3],
+                "difficulty": 4,
+                "met": 4.0,
+            },
+            {
+                "exercise_name": "lying leg raise",
+                "category": [3, 2],
+                "difficulty": 4,
+                "met": 4.0,
+            },
+            {
+                "exercise_name": "scissor cross",
+                "category": [2, 3],
+                "difficulty": 4,
+                "met": 4.5,
+            },
+            {
+                "exercise_name": "Y-exercise",
+                "category": [1, 2],
+                "difficulty": 3,
+                "met": 4.5,
+            },
+            {
+                "exercise_name": "knee push up",
+                "category": [1, 2],
+                "difficulty": 3,
+                "met": 5.0,
+            },
+        ],
+        "상": [
+            {
+                "exercise_name": "burpee test",
+                "category": [4],
+                "difficulty": 5,
+                "met": 8.0,
+            },
+            {"exercise_name": "plank", "category": [4], "difficulty": 5, "met": 8.0},
+            {
+                "exercise_name": "push up",
+                "category": [1, 2],
+                "difficulty": 4,
+                "met": 6.0,
+            },
+            {
+                "exercise_name": "bicycle crunch",
+                "category": [3, 2],
+                "difficulty": 5,
+                "met": 5.0,
+            },
+            {
+                "exercise_name": "side lunge",
+                "category": [3],
+                "difficulty": 5,
+                "met": 5.0,
+            },
+            {
+                "exercise_name": "good morning exercise",
+                "category": [3],
+                "difficulty": 5,
+                "met": 5.0,
+            },
+        ],
+    }
+
+    # ============================================
+    # 시간대별 설정
+    # ============================================
+    target_seconds = duration_min * 60
+    pool = exercise_pools.get(difficulty_level, exercise_pools["중"])
+
+    if duration_min <= 15:
+        base_sets, max_sets = 2, 3
+        rest_sec = 10 if difficulty_level != "하" else 15
+        duration_sec = 30
+    elif duration_min <= 30:
+        base_sets, max_sets = 3, 4
+        rest_sec = 15 if difficulty_level != "하" else 20
+        duration_sec = 30
+    else:
+        base_sets, max_sets = 3, 5
+        rest_sec = 20 if difficulty_level != "하" else 25
+        duration_sec = 30 if difficulty_level != "상" else 40
+
+    # ============================================
+    # 동적 운동 선택 (순환 반복)
+    # ============================================
+    items = []
+    total_time_sec = 0
+    exercise_index = 0
+
+    while total_time_sec < target_seconds * 0.95:
+        ex = pool[exercise_index % len(pool)]
+
+        remaining_sec = target_seconds - total_time_sec
+        time_per_set = duration_sec + rest_sec
+        possible_sets = min(max_sets, max(base_sets, remaining_sec // time_per_set))
+
+        if possible_sets < base_sets:
+            if remaining_sec >= duration_sec:
+                possible_sets = 1
+            else:
+                break
+
+        exercise_time = (duration_sec * possible_sets) + (
+            rest_sec * (possible_sets - 1)
+        )
+
+        if total_time_sec + exercise_time > target_seconds * 1.1:
+            available_time = int(target_seconds * 1.05) - total_time_sec
+            possible_sets = max(1, available_time // time_per_set)
+            exercise_time = (duration_sec * possible_sets) + (
+                rest_sec * (possible_sets - 1)
+            )
+            if possible_sets < 1 or exercise_time <= 0:
+                break
+
+        item = {
+            "exercise_name": ex["exercise_name"],
+            "category": ex.get("category", [4]),
+            "difficulty": ex.get("difficulty", 3),
+            "met": ex["met"],
+            "duration_sec": duration_sec,
+            "rest_sec": rest_sec,
+            "set_count": possible_sets,
+            "reps": None,
+        }
+        items.append(item)
+        total_time_sec += exercise_time
+        exercise_index += 1
+
+        if len(items) >= 15:
+            break
+
+    # ============================================
+    # 칼로리 계산
+    # ============================================
+    avg_met = sum(item["met"] for item in items) / len(items) if items else 4
+    weight = raw.get("weight", 65) if raw else 65
+    total_calories = int(avg_met * weight * (duration_min / 60))
+
+    # ============================================
+    # 상세 분석 텍스트 생성 (build_analysis_text 사용!)
+    # ============================================
+    if raw:
+        analysis = build_analysis_text(
+            raw=raw,
+            difficulty_level=difficulty_level,
+            duration_min=duration_min,
+            item_count=len(items),
+            total_time_sec=total_time_sec,
+        )
+    else:
+        analysis = f"💪 {difficulty_level} 강도로 {duration_min}분 운동을 구성했습니다. 총 {len(items)}개 운동, 약 {total_time_sec//60}분"
+
+    # ============================================
+    # 결과 반환
+    # ============================================
+    return {
+        "analysis": analysis,
+        "ai_recommended_routine": {
+            "total_time_min": duration_min,
+            "total_time_sec": total_time_sec,
+            "total_calories": total_calories,
+            "items": items,
+        },
+        "used_data_ranked": {
+            "fallback": True,
+            "difficulty": difficulty_level,
+            "reason": "안전 모드 또는 LLM 검증 실패",
+        },
+        "detailed_health_report": build_detailed_health_analysis(raw) if raw else "",
+    }
 
 
 # ==========================================================
-# 4) 운동 Seed(17종)
+# 6) 운동 Seed (17종)
 # ==========================================================
 EXERCISE_REFERENCE = [
     {"name": "standing side crunch", "category": [2, 3], "difficulty": 3, "met": 4},
@@ -85,7 +392,7 @@ SEED_JSON = json.dumps(EXERCISE_REFERENCE, ensure_ascii=False)
 
 
 # ==========================================================
-# 5) 최종 LLM 운동 분석 엔진 (RAG 포함)
+# 7) 메인 LLM 분석 함수 (Option C)
 # ==========================================================
 def run_llm_analysis(
     summary: dict,
@@ -93,215 +400,204 @@ def run_llm_analysis(
     difficulty_level: str,
     duration_min: int,
 ) -> dict:
+    """
+    LLM 기반 운동 분석 엔진 - Option C
 
-    summary_text = summary.get("summary_text", "")
+    1) 강제 Fallback 조건: 강도 "하" / 점수 < 50 / 데이터 부족
+    2) LLM 호출 후 검증
+    3) 검증 실패 시 Fallback
+    """
+
     raw = summary.get("raw", {})
-    seed_text = SEED_JSON
 
-    # ------------------------------------------------------
-    # 1) RAG 안전 처리
-    # ------------------------------------------------------
+    # RAG 처리
     similar_days = []
     if rag_result and isinstance(rag_result, dict):
         similar_days = rag_result.get("similar_days", []) or []
 
-    # ------------------------------------------------------
-    # 2) RAG 표현 블록
-    # ------------------------------------------------------
-    rag_items = []
-    for item in similar_days[:3]:
-        created = item.get("created_at")
-        summary_txt = item.get("summary_text")
-        sim = item.get("similarity")
-        rag_items.append(f"- {created} | 유사도 {sim}, 요약: {summary_txt}")
+    # 규칙 기반 건강 해석
+    health_context = build_health_context_for_llm(raw)
+    rag_context = analyze_rag_patterns(similar_days)
+    exercise_rec = recommend_exercise_intensity(raw)
+    health_score = calculate_health_score(raw)
 
-    rag_block = "\n".join(rag_items) if rag_items else "유사 데이터 없음"
+    auto_difficulty = exercise_rec.get("recommended_level", difficulty_level)
+    score = health_score.get("score", 50)
 
-    # ------------------------------------------------------
-    # 3) raw block
-    # ------------------------------------------------------
-    raw_block = textwrap.dedent(
-        f"""
-    [정규화된 건강 수치(raw)]
-    운동 추천의 최우선 기준입니다.
+    # ============================================
+    # 1) 강제 Fallback 조건
+    # ============================================
+    use_fallback = False
+    fallback_reason = ""
 
-    # 수면
-    sleep_min: {raw.get('sleep_min', 0)}
-    sleep_hr: {raw.get('sleep_hr', 0)}
+    if auto_difficulty == "하":
+        use_fallback = True
+        fallback_reason = f"권장 강도 '하' (안전 모드)"
+    elif score < 50:
+        use_fallback = True
+        fallback_reason = f"건강 점수 {score}점 (50점 미만)"
+    elif not check_data_quality(raw):
+        use_fallback = True
+        fallback_reason = "데이터 부족 (수면/활동량 없음)"
 
-    # 신체
-    weight: {raw.get('weight', 0)}
-    height_m: {raw.get('height_m', 0)}
-    bmi: {raw.get('bmi', 0)}
-    body_fat: {raw.get('body_fat', 0)}
-    lean_body: {raw.get('lean_body', 0)}
-
-    # 활동
-    distance_km: {raw.get('distance_km', 0)}
-    steps: {raw.get('steps', 0)}
-    steps_cadence: {raw.get('steps_cadence', 0)}
-    exercise_min: {raw.get('exercise_min', 0)}
-    flights: {raw.get('flights', 0)}
-
-    # 칼로리
-    total_calories: {raw.get('total_calories', 0)}
-    active_calories: {raw.get('active_calories', 0)}
-    calories_intake: {raw.get('calories_intake', 0)}
-
-    # 바이탈
-    oxygen_saturation: {raw.get('oxygen_saturation', 0)}
-    heart_rate: {raw.get('heart_rate', 0)}
-    resting_heart_rate: {raw.get('resting_heart_rate', 0)}
-    walking_heart_rate: {raw.get('walking_heart_rate', 0)}
-    hrv: {raw.get('hrv', 0)}
-    systolic: {raw.get('systolic', 0)}
-    diastolic: {raw.get('diastolic', 0)}
-    glucose: {raw.get('glucose', 0)}
-    """
-    )
-
-    # ------------------------------------------------------
-    # 4) SYSTEM PROMPT
-    # ------------------------------------------------------
-    system_prompt = textwrap.dedent(
-        """
-    너는 건강 데이터 분석 + 운동 처방 전문가다.
-    사용자의 데이터를 기반으로 과학적인 운동 루틴을 생성한다.
-
-    [절대 규칙]
-    - 반드시 JSON ONLY 출력
-    - 설명문 금지
-    - 코드블록 금지
-    - 운동 17종 외 사용 금지
-    - 스키마 절대 변경 금지
-    """
-    )
-
-    # ------------------------------------------------------
-    # 5) JSON schema
-    # ------------------------------------------------------
-    schema_block = textwrap.dedent(
-        """
-    {
-        "analysis": "...",
-        "ai_recommended_routine": {
-            "total_time_min": number,
-            "total_calories": number,
-            "items": [
-                {
-                    "exercise_name": "...",
-                    "category": [...],
-                    "difficulty": number,
-                    "met": number,
-                    "duration_sec": number,
-                    "rest_sec": number,
-                    "set_count": number,
-                    "reps": number | null
-                }
-            ]
-        },
-        "used_data_ranked": {
-            "summary_text": { "feature": score },
-            "raw": { "metric": score },
-            "rag_pattern": { "pattern": score }
+    if use_fallback:
+        print(f"[INFO] Fallback 사용: {fallback_reason}")
+        result = get_fallback_routine(auto_difficulty, duration_min, raw)
+        result["health_context"] = {
+            "health_score": health_score,
+            "recommended_intensity": auto_difficulty,
+            "fallback_reason": fallback_reason,
         }
-    }
-    """
-    )
+        return result
 
-    # ------------------------------------------------------
-    # 6) user prompt (summary + raw + RAG)
-    # ------------------------------------------------------
-    user_prompt = textwrap.dedent(
-        f"""
-    {raw_block}
+    # ============================================
+    # 2) LLM 호출
+    # ============================================
+    detailed_report = build_detailed_health_analysis(raw)
 
-    [summary_text]
-    {summary_text}
+    raw_block = f"""[사용자 건강 데이터]
 
-    [RAG 기반 최근 건강 패턴]
-    {rag_block}
+📊 건강 점수: {score}점 ({health_score.get('grade', 'C')}등급)
 
-    [입력 정보]
-    난이도: {difficulty_level}
-    운동 시간: {duration_min}분
+• 수면: {raw.get('sleep_hr', 0)}시간
+• 걸음수: {raw.get('steps', 0):,}보
+• 활동 칼로리: {raw.get('active_calories', 0)}kcal
+• 심박수: {raw.get('heart_rate', 0)}bpm / 휴식기 {raw.get('resting_heart_rate', 0)}bpm
+• BMI: {raw.get('bmi', 0):.1f}"""
 
-    [운동 Seed]
-    {seed_text}
+    system_prompt = f"""당신은 피트니스 코치입니다.
 
-    ─────────────────────────────────────
-    ■ 난이도 규칙
-    ─────────────────────────────────────
-    하: MET 2.5-4
-    중: MET 4-5
-    상: MET 5-8
+## 역할
+건강 데이터를 분석하여 맞춤형 운동 루틴을 JSON으로 처방합니다.
 
-    ─────────────────────────────────────
-    ■ 운동 시간 규칙 (절대 준수)
-    ─────────────────────────────────────
-    total_time_sec = Σ(ex.duration_sec * ex.set_count) + Σ(ex.rest_sec * ex.set_count)
+## 규칙
 
-    total_time_sec must be within:
-    duration_min * 60 * 0.95  ~  duration_min * 60 * 1.05
+### 1. analysis 작성 (3-4문장)
+- 현재 건강 상태 평가
+- 운동 선택 이유
+- 주의사항
 
-    즉, 전체 운동 시간은 요청된 운동 시간의 ±5% 이내여야 한다.
-    # 절대 규칙
-    - total_time_sec 규칙은 가장 중요한 제약 조건이다.
-    - 이를 위반하는 JSON은 자동으로 실패로 처리된다.
+### 2. 운동 선택 (MET 범위 엄격 준수!)
+- 17종 운동 목록에서만 선택
+- 시스템 권장 강도: {auto_difficulty}
+  * 하: MET 2.5-4
+  * 중: MET 4-5
+  * 상: MET 5-8
 
-    ─────────────────────────────────────
-    ■ 개인화 규칙(summary.raw + RAG)
-    ─────────────────────────────────────
-    - sleep_hr < 5 → 고강도 금지(MET ≤ 4.5)
-    - oxygen_saturation < 94 → plank·burpee 제한
-    - bmi ≥ 25 → 유산소 비중 ↑
-    - steps > 10000 → 하체 피로 고려
-    - heart_rate > 90 → 휴식시간 +30%
+### 3. 시간 계산 (매우 중요!)
+- 목표: {duration_min}분 = {duration_min * 60}초
+- 각 운동: (duration_sec × set_count) + (rest_sec × (set_count - 1))
+- 모든 운동 합계가 목표의 80~120% 이내
 
-    ─────────────────────────────────────
-    ■ JSON 스키마
-    ─────────────────────────────────────
-    {schema_block}
+## 응답 JSON
+{{
+  "analysis": "3-4문장 분석",
+  "ai_recommended_routine": {{
+    "total_time_min": {duration_min},
+    "total_calories": 예상칼로리,
+    "items": [
+      {{
+        "exercise_name": "운동명",
+        "category": [카테고리],
+        "difficulty": 난이도,
+        "met": MET값,
+        "duration_sec": 30-60,
+        "rest_sec": 10-20,
+        "set_count": 2-5,
+        "reps": null
+      }}
+    ]
+  }},
+  "used_data_ranked": {{
+    "primary": "주요 데이터",
+    "secondary": "보조 데이터"
+  }}
+}}"""
 
-    **JSON만 출력하세요**
-    """
-    )
+    user_prompt = f"""{raw_block}
 
-    # ------------------------------------------------------
-    # 7) GPT 실행
-    # ------------------------------------------------------
-    resp = client.chat.completions.create(
-        model=LLM_MODEL_MAIN,
-        messages=[
-            {"role": "system", "content": system_prompt},
-            {"role": "user", "content": user_prompt},
-        ],
-        max_tokens=1500,
-        temperature=0.1,
-    )
+{health_context}
 
-    raw_text = resp.choices[0].message.content
-    cleaned = clean_json_text(raw_text)
+{rag_context}
 
-    parsed = try_parse_json(cleaned)
-    if parsed and "analysis" in parsed and "ai_recommended_routine" in parsed:
-        return parsed
+---
+• 요청 난이도: {difficulty_level}
+• 시스템 권장: {auto_difficulty} (반드시 준수!)
+• 목표 시간: {duration_min}분
 
-    # 자동 복구
-    repaired = repair_json_with_llm(cleaned)
-    parsed2 = try_parse_json(repaired)
-    if parsed2 and "analysis" in parsed2 and "ai_recommended_routine" in parsed2:
-        return parsed2
+## 운동 목록
+{SEED_JSON}
 
-    # 완전 실패 → fallback JSON
-    return {
-        "analysis": "LLM 분석 실패",
-        "ai_recommended_routine": {
-            "total_time_min": 0,
-            "total_calories": 0,
-            "items": [],
-        },
-        "used_data_ranked": {
-            "error": "LLM 출력 오류 또는 JSON 복구 실패",
-        },
-    }
+JSON만 출력. 시간 계산 정확히!"""
+
+    try:
+        resp = client.chat.completions.create(
+            model=LLM_MODEL_MAIN,
+            messages=[
+                {"role": "system", "content": system_prompt},
+                {"role": "user", "content": user_prompt},
+            ],
+            max_tokens=ANALYSIS_MAX_TOKENS,
+            temperature=0.3,
+        )
+
+        raw_text = resp.choices[0].message.content
+        cleaned = clean_json_text(raw_text)
+        parsed = try_parse_json(cleaned)
+
+        # ============================================
+        # 3) LLM 결과 검증
+        # ============================================
+        if parsed and "analysis" in parsed and "ai_recommended_routine" in parsed:
+            if validate_routine(parsed, auto_difficulty, duration_min):
+                parsed["detailed_health_report"] = detailed_report
+                parsed["health_context"] = {
+                    "health_score": health_score,
+                    "recommended_intensity": auto_difficulty,
+                    "llm_validated": True,
+                }
+                print(f"[INFO] LLM 결과 검증 성공")
+                return parsed
+            else:
+                print(f"[WARN] LLM 결과 검증 실패 → Fallback 사용")
+                result = get_fallback_routine(auto_difficulty, duration_min, raw)
+                result["health_context"] = {
+                    "health_score": health_score,
+                    "recommended_intensity": auto_difficulty,
+                    "fallback_reason": "LLM 결과 검증 실패",
+                }
+                return result
+
+        print(f"[WARN] LLM JSON 파싱 실패 → Fallback 사용")
+        result = get_fallback_routine(auto_difficulty, duration_min, raw)
+        result["health_context"] = {
+            "health_score": health_score,
+            "recommended_intensity": auto_difficulty,
+            "fallback_reason": "LLM JSON 파싱 실패",
+        }
+        return result
+
+    except Exception as e:
+        print(f"[ERROR] LLM 호출 실패: {str(e)} → Fallback 사용")
+        result = get_fallback_routine(auto_difficulty, duration_min, raw)
+        result["health_context"] = {
+            "health_score": health_score,
+            "recommended_intensity": auto_difficulty,
+            "fallback_reason": f"LLM 호출 오류: {str(e)}",
+        }
+        return result
+
+
+# ==========================================================
+# 8) 헬퍼 함수들
+# ==========================================================
+def get_health_analysis_context(raw: dict) -> str:
+    return build_health_context_for_llm(raw)
+
+
+def get_health_score(raw: dict) -> dict:
+    return calculate_health_score(raw)
+
+
+def get_detailed_health_report(raw: dict) -> str:
+    return build_detailed_health_analysis(raw)

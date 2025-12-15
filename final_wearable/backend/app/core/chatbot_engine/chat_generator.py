@@ -1,3 +1,8 @@
+"""
+Chat Generator - 자유형 챗봇 응답 생성기 (간결화 버전)
+응답 길이: 기존 대비 약 50% 축소
+"""
+
 import os
 import json
 from openai import OpenAI
@@ -6,7 +11,14 @@ from app.core.chatbot_engine.intent_classifier import classify_intent
 from app.core.chatbot_engine.persona import get_persona_prompt
 from app.core.chatbot_engine.rag_query import query_health_data
 from app.core.llm_analysis import run_llm_analysis
-from app.config import LLM_MODEL_MAIN, LLM_TEMPERATURE, LLM_MAX_TOKENS
+from app.core.health_interpreter import (
+    interpret_health_data,
+    build_health_context_for_llm,
+)
+from app.config import LLM_MODEL_MAIN, LLM_TEMPERATURE
+
+# ✅ 챗봇 응답용 토큰 제한 (간결화)
+CHAT_MAX_TOKENS = 400  # 기존 2048 → 400으로 축소
 
 
 class ChatGenerator:
@@ -17,167 +29,197 @@ class ChatGenerator:
     # ================================================================
     # 1) OpenAI 호출
     # ================================================================
-    def _call_openai(self, prompt: str):
+    def _call_openai(
+        self, system_prompt: str, user_prompt: str, max_tokens: int = None
+    ):
         resp = self.client.chat.completions.create(
             model=LLM_MODEL_MAIN,
-            messages=[{"role": "user", "content": prompt}],
+            messages=[
+                {"role": "system", "content": system_prompt},
+                {"role": "user", "content": user_prompt},
+            ],
             temperature=LLM_TEMPERATURE,
-            max_tokens=LLM_MAX_TOKENS,
+            max_tokens=max_tokens or CHAT_MAX_TOKENS,
         )
         return resp.choices[0].message.content
 
     # ================================================================
-    # 2) 공통 prompt wrapper
+    # 2) System Prompt 생성 (간결화)
     # ================================================================
-    def _wrap_prompt(self, persona_prompt: str, body: str):
-        return f"""
-[Persona]
-당신은 다음 캐릭터의 말투와 성격을 유지해야 합니다:
+    def _build_system_prompt(self, persona_prompt: str, context_type: str) -> str:
+        """간결한 시스템 프롬프트 생성"""
+
+        base_instructions = f"""당신은 아래 캐릭터입니다:
+
 {persona_prompt}
 
-[Task]
-아래 정보를 기반으로 전문적이며 정성스럽고 명확하게 설명하세요.
-
-{body}
-
-[Style]
-- 캐릭터 말투 유지
-- 데이터 기반 분석을 포함하되 단순하게 표현
-- 공감 표현 추가
-- 과학적 설명은 쉽게
+## 핵심 규칙
+1. 캐릭터 말투 유지
+2. **반드시 2-3문장으로 간결하게 응답**
+3. 핵심만 전달, 불필요한 설명 생략
+4. 리스트/불릿 사용 금지
 """
 
+        if context_type == "health_query":
+            base_instructions += """
+## 건강 질문 응답
+- 핵심 수치 1-2개만 언급
+- 짧은 조언 1개 추가
+"""
+        elif context_type == "routine_request":
+            base_instructions += """
+## 운동 루틴 응답
+- 운동 목록은 별도 포맷으로 제공됨
+- 간단한 격려만 추가
+"""
+        else:
+            base_instructions += """
+## 일반 대화
+- 친근하게 1-2문장으로 응답
+"""
+
+        return base_instructions
+
     # ================================================================
-    # 3) RAG 데이터 포맷팅
+    # 3) RAG 데이터 포맷팅 (간소화)
     # ================================================================
-    def _format_rag(self, rag):
+    def _format_rag_brief(self, rag: dict) -> str:
+        """RAG 결과 간소화"""
         similar = rag.get("similar_days", [])
         if not similar:
-            return "유사한 날짜의 건강 데이터가 없습니다."
+            return ""
 
-        formatted = []
-        for item in similar[:3]:
-            formatted.append(
-                f"- 날짜: {item.get('date')} (유사도: {item.get('similarity')})\n"
-                f"  요약: {item.get('summary_text')}"
-            )
-        return "\n".join(formatted)
+        # 최근 1개만 간략히
+        item = similar[0]
+        raw = item.get("raw", {})
+        return (
+            f"유사패턴: 수면 {raw.get('sleep_hr', 0)}h, 걸음 {raw.get('steps', 0):,}보"
+        )
 
     # ================================================================
-    # 4) 메인 generate()
+    # 4) 운동 루틴 템플릿 응답 (간소화)
+    # ================================================================
+    def _format_routine_response(
+        self, character: str, analysis: str, routine_data: dict, health_info: dict
+    ) -> str:
+        """간결한 운동 루틴 응답"""
+        items = routine_data.get("items", [])
+        total_time = routine_data.get("total_time_min", 30)
+        total_cal = routine_data.get("total_calories", 150)
+
+        exercise_rec = health_info.get("exercise_recommendation", {})
+
+        # 캐릭터별 한줄 인트로
+        intros = {
+            "devil_coach": "인간, 오늘 메뉴다!",
+            "angel_coach": "오늘의 루틴이에요 ✨",
+            "booster_coach": "렛츠고!! 🔥",
+        }
+
+        outros = {
+            "devil_coach": "각오해라!",
+            "angel_coach": "화이팅! 💪",
+            "booster_coach": "파워!! 🎉",
+        }
+
+        intro = intros.get(character, intros["booster_coach"])
+        outro = outros.get(character, outros["booster_coach"])
+
+        # 운동 목록 (간소화)
+        exercise_lines = []
+        for i, item in enumerate(items[:5], 1):  # 최대 5개
+            name = item.get("exercise_name", "운동")
+            duration = item.get("duration_sec", 30)
+            sets = item.get("set_count", 3)
+            exercise_lines.append(f"{i}. {name} {duration}초×{sets}세트")
+
+        exercises_text = "\n".join(exercise_lines) if exercise_lines else "- 스트레칭"
+
+        return f"""{intro}
+
+⏱️ {total_time}분 | 🔥 {total_cal}kcal | 💪 {exercise_rec.get('recommended_level', '중')}
+
+{exercises_text}
+
+{outro}"""
+
+    # ================================================================
+    # 5) 메인 generate() - 간결화
     # ================================================================
     def generate(self, user_id: str, message: str, character: str):
 
-        # 1) intent 분류 + persona 생성
         intent = classify_intent(message)
         persona_prompt = get_persona_prompt(character)
 
         # ================================================================
-        # 1) 건강 데이터 기반 질문(health_query)
+        # 1) 건강 데이터 질문 (health_query)
         # ================================================================
         if intent == "health_query":
 
             rag = query_health_data(message, user_id)
             similar = rag.get("similar_days", [])
 
-            # fallback
             if not similar:
-                body = f"""
-[User Message]
-{message}
+                system = self._build_system_prompt(persona_prompt, "health_query")
+                user_prompt = f"""질문: {message}
 
-[Health Data]
-건강 데이터가 충분히 저장되어 있지 않습니다.
-일반적인 건강 조언을 캐릭터 말투를 고려하여 제공하세요.
-                """
-                prompt = self._wrap_prompt(persona_prompt, body)
-                return self._call_openai(prompt)
+데이터 없음. 일반 조언을 2문장으로."""
+                return self._call_openai(system, user_prompt, max_tokens=200)
 
-            # 정상 RAG 활용
-            top_raw = similar[0]["raw"]  # 오늘과 가장 유사한 날의 raw
-            rag_text = self._format_rag(rag)
+            top_raw = similar[0]["raw"]
+            health_context = build_health_context_for_llm(top_raw)
 
-            body = f"""
-[User Message]
-{message}
+            system = self._build_system_prompt(persona_prompt, "health_query")
+            user_prompt = f"""질문: {message}
 
-[오늘과 유사한 건강 데이터(raw)]
-{json.dumps(top_raw, ensure_ascii=False, indent=2)}
+{health_context}
 
-[최근 유사 건강 패턴(RAG 기반)]
-{rag_text}
+**2-3문장으로 핵심만 답변하세요.**"""
 
-이 데이터를 기반으로:
-- 오늘의 건강 상태 분석
-- 최근 패턴 경향 요약
-- 개선이 필요한 생활 습관 또는 관리 포인트
-
-를 캐릭터 말투를 고려하여 설명하세요.
-            """
-
-            prompt = self._wrap_prompt(persona_prompt, body)
-            return self._call_openai(prompt)
+            return self._call_openai(system, user_prompt, max_tokens=300)
 
         # ================================================================
-        # 2) 운동 루틴 요청(routine_request)
+        # 2) 운동 루틴 요청 (routine_request)
         # ================================================================
         if intent == "routine_request":
 
             rag = query_health_data("routine", user_id)
             similar = rag.get("similar_days", [])
 
-            # fallback: 운동 관련 데이터 없음
             if not similar:
-                body = f"""
-[User Message]
-{message}
+                system = self._build_system_prompt(persona_prompt, "routine_request")
+                user_prompt = f"""요청: {message}
 
-[Health Data]
-최근 운동 데이터가 충분하지 않습니다.
+데이터 없음. 기본 홈트 루틴을 2문장으로 설명."""
+                return self._call_openai(system, user_prompt, max_tokens=200)
 
-초보자도 가능한 30분 홈트 루틴을 캐릭터 스타일에 맞게 설명하세요.
-구성 예시:
-- 준비운동 5분
-- 하체/상체/코어 루틴 구성
-- 마무리 스트레칭
-                """
-                prompt = self._wrap_prompt(persona_prompt, body)
-                return self._call_openai(prompt)
-
-            # RAG에서 top_raw 뽑아서 LLM 운동 분석기로 전달
             top_raw = similar[0]["raw"]
+            health_interpretation = interpret_health_data(top_raw)
 
-            # LLM 기반 추천
             routine_result = run_llm_analysis(
-                summary=top_raw,
-                rag_result=similar,
+                summary={
+                    "raw": top_raw,
+                    "summary_text": similar[0].get("summary_text", ""),
+                },
+                rag_result={"similar_days": similar},
                 difficulty_level="중",
                 duration_min=30,
             )
 
-            body = f"""
-[User Message]
-{message}
+            analysis_text = routine_result.get(
+                "analysis", "오늘 컨디션에 맞는 루틴입니다."
+            )
+            routine_data = routine_result.get("ai_recommended_routine", {})
 
-[운동 추천 결과(JSON)]
-{json.dumps(routine_result, ensure_ascii=False, indent=2)}
-
-위 운동 루틴을 사용자가 이해하기 쉽고,
-부담 없이 따라올 수 있게 캐릭터 말투로 설명하세요.
-            """
-
-            prompt = self._wrap_prompt(persona_prompt, body)
-            return self._call_openai(prompt)
+            return self._format_routine_response(
+                character, analysis_text, routine_data, health_interpretation
+            )
 
         # ================================================================
-        # 3) 일반 대화
+        # 3) 일반 대화 (더 간결하게)
         # ================================================================
-        body = f"""
-[User Message]
-{message}
+        system = self._build_system_prompt(persona_prompt, "general")
+        user_prompt = f"""메시지: {message}
 
-건강 데이터나 루틴 요청이 아닌 일반 대화입니다.
-자연스럽고 공감 있게 캐릭터 말투를 고려하여 대화하세요.
-"""
-        prompt = self._wrap_prompt(persona_prompt, body)
-        return self._call_openai(prompt)
+**1-2문장으로 짧게 응답.**"""
+        return self._call_openai(system, user_prompt, max_tokens=150)

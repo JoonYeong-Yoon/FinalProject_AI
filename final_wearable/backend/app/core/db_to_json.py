@@ -20,11 +20,6 @@ def db_to_json(db_path: str) -> dict:
     cursor.execute("SELECT name FROM sqlite_master WHERE type='table';")
     tables = cursor.fetchall()
 
-    print("\n===== Health Connect DB Tables =====")
-    for (name,) in tables:
-        print(" -", name)
-    print("====================================\n")
-
     if not tables:
         conn.close()
         raise ValueError("DB 내부에 테이블이 없습니다.")
