@@ -19,12 +19,12 @@ device = "cuda" if torch.cuda.is_available() else "cpu"
 # -------------------------
 # 로컬 경로
 # -------------------------
-ROOT = "stage3_nipushup"
-IMAGE_ROOT = "stage3_model5"
-MODEL_PATH = "model5cond_best_kneepushup.pth"
+ROOT = "kneepushup_npzs"
+IMAGE_ROOT = "kneepushup_images"
+MODEL_PATH = "model_kneepushup.pth"
 
-VIDEO_PATH = "니푸쉬업.mp4"
-OUT_VIDEO_PATH = "output_니푸쉬업.mp4"
+VIDEO_PATH = "video_kneepushup.mp4"
+OUT_VIDEO_PATH = "output_video_kneepushup.mp4"
 
 FONT_PATH = r"C:\Windows\Fonts\NanumGothic.ttf"
 
@@ -53,8 +53,14 @@ class NipuPushupDataset(torch.utils.data.Dataset):
     def __getitem__(self, idx):
         data = np.load(os.path.join(self.dir, self.files[idx]), allow_pickle=True)
 
-        img_key = data["img_keys"][0].replace("\\", "/")
-        img_path = os.path.join(self.image_root, self.split, img_key)
+        img_name = os.path.basename(data["img_keys"][0])
+        img_path = os.path.join(
+            self.image_root,
+            self.split,
+            self.exercise,
+            img_name
+        )
+
 
         img = cv2.imread(img_path)
         if img is None:
@@ -224,10 +230,14 @@ def run_nipushup_video(video_path, out_video_path, model, cond_names, SEQ=16):
     H = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
     
     # 🔥 Windows 안정 코덱 (재생 100%)
-    fourcc = cv2.VideoWriter_fourcc(*"XVID")
-    out_video_path = out_video_path.replace(".mp4", ".avi")
+    # 🔥 mp4 + H.264 (Windows / VLC / 브라우저 전부 OK)
+    fourcc = cv2.VideoWriter_fourcc(*"avc1")  # H.264
+    out_video_path = out_video_path.replace(".avi", ".mp4")
     
     writer = cv2.VideoWriter(out_video_path, fourcc, fps, (W, H))
+    if not writer.isOpened():
+        raise RuntimeError("VideoWriter failed to open (avc1)")
+
     if not writer.isOpened():
         raise RuntimeError("VideoWriter failed to open")
 
