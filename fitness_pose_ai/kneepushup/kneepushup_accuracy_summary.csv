@@ -1,0 +1,7 @@
+Metric,Value
+Condition Accuracy - 척추의 중립,0.580
+Condition Accuracy - 이완시 팔꿈치 90도,0.857
+Condition Accuracy - 가슴의 충분한 이동,0.625
+Condition Accuracy - 손의 위치 가슴 중앙 여부,0.897
+Condition Accuracy - 고개 젖힘/숙임 여부,0.688
+Model Exact Match Accuracy,0.196
