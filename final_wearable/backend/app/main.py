@@ -12,11 +12,15 @@ from app.api.similar_api import router as similar_router
 from app.api.chat_api import router as chat_router
 from app.api.user_api import router as user_router
 
+from fastapi import APIRouter
+from app.core.vector_store import collection, search_similar_summaries
+
 from dotenv import load_dotenv
 
 load_dotenv()
 
 print("🔥🔥 FASTAPI SERVER LOADED: VERSION TEST 🔥🔥")
+
 # ==========================
 # 1) FastAPI 앱 생성
 # ==========================
@@ -32,20 +36,98 @@ app = FastAPI(
 # ==========================
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],  # 앱 테스트 / APK 테스트 / WiFi 환경 바뀌어도 OK
+    allow_origins=["*"],
     allow_credentials=True,
-    allow_methods=["*"],  # GET/POST/PUT/DELETE/OPTIONS 등 모두 허용
-    allow_headers=["*"],  # 모든 헤더 허용 (파일 업로드 필수)
+    allow_methods=["*"],
+    allow_headers=["*"],
 )
 
 # ==========================
-# 3) 라우터 등록
+# 3) 기존 라우터 등록
 # ==========================
-app.include_router(file_upload_router)  # ZIP 파일 업로드(수동, 헬스커넥트)
-app.include_router(auto_upload_router)  # JSON 데이터(자동, 헬스커넥트, 애플 헬스킷)
+app.include_router(file_upload_router)
+app.include_router(auto_upload_router)
 app.include_router(similar_router)
 app.include_router(chat_router)
 app.include_router(user_router)
+
+vectordb_router = APIRouter(prefix="/api/vectordb", tags=["VectorDB"])
+
+
+@vectordb_router.get("/status")
+async def get_vectordb_status():
+    """VectorDB 전체 상태 확인"""
+    try:
+        count = collection.count()
+        all_data = collection.get(include=["metadatas"])
+
+        user_data = {}
+        for metadata in all_data.get("metadatas", []):
+            user_id = metadata.get("user_id", "unknown")
+            date = metadata.get("date", "unknown")
+
+            user_data.setdefault(user_id, []).append(date)
+
+        user_summary = {
+            user_id: {
+                "count": len(dates),
+                "dates": sorted(dates, reverse=True),
+            }
+            for user_id, dates in user_data.items()
+        }
+
+        return {
+            "status": "ok",
+            "total_count": count,
+            "users": user_summary,
+        }
+
+    except Exception as e:
+        return {
+            "status": "error",
+            "message": str(e),
+        }
+
+
+@vectordb_router.get("/user/{user_id}")
+async def get_user_vectordb_data(user_id: str):
+    """특정 사용자 VectorDB 데이터 조회"""
+    try:
+        result = search_similar_summaries(
+            query_dict={"query": "health summary"},
+            user_id=user_id,
+            top_k=100,
+        )
+
+        similar_days = result.get("similar_days", [])
+        sorted_days = sorted(
+            similar_days,
+            key=lambda x: x.get("date", ""),
+            reverse=True,
+        )
+
+        return {
+            "status": "ok",
+            "user_id": user_id,
+            "count": len(sorted_days),
+            "data": [
+                {
+                    "date": day.get("date"),
+                    "summary_preview": day.get("summary_text", "")[:100],
+                    "data_keys": list(day.get("raw", {}).keys()),
+                }
+                for day in sorted_days
+            ],
+        }
+
+    except Exception as e:
+        return {
+            "status": "error",
+            "message": str(e),
+        }
+
+
+app.include_router(vectordb_router)
 
 
 # ==========================
@@ -53,7 +135,7 @@ app.include_router(user_router)
 # ==========================
 @app.get("/")
 def root():
-    return {"message": "API is running(VectorDB mode)"}
+    return {"message": "API is running (VectorDB mode)"}
 
 
 # ==========================

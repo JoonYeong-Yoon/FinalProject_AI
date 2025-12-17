@@ -31,17 +31,16 @@ def query_health_data(message: str, user_id: str, top_k: int = 3) -> dict:
 
     for item in similar_list:
         date_only = item.get("date")  # 이미 YYYY-MM-DD
+        raw_data = item.get("raw") or {}
 
-    raw_data = item.get("raw") or {}
-
-    cleaned_results.append(
-        {
-            "date": date_only,
-            "similarity": item.get("similarity"),
-            "summary_text": item.get("summary_text"),
-            "raw": raw_data,
-        }
-    )
+        cleaned_results.append(
+            {
+                "date": date_only,
+                "similarity": item.get("similarity"),
+                "summary_text": item.get("summary_text"),
+                "raw": raw_data,
+            }
+        )
 
     return {
         "similar_days": cleaned_results,

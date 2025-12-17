@@ -1,17 +1,14 @@
-"""
-LLM Analysis Engine - v7 (Option C + 개선된 Fallback + 상세 분석 텍스트)
-
-변경사항:
-1. Option C: 안전 모드 + LLM 결과 검증
-2. 개선된 Fallback: 10분/30분/60분 모두 지원
-3. build_analysis_text: 상세한 분석 텍스트 (근거 포함)
-"""
-
 import os
 import json
 from dotenv import load_dotenv
 from openai import OpenAI
-from app.config import LLM_MODEL_MAIN, LLM_TEMPERATURE
+
+from app.config import LLM_MODEL_MAIN, LLM_TEMPERATURE, LLM_MAX_TOKENS
+from app.core.rag_query import (
+    build_rag_query,
+    classify_rag_strength,
+)
+from app.core.vector_store import search_similar_summaries
 from app.core.health_interpreter import (
     interpret_health_data,
     build_health_context_for_llm,
@@ -23,8 +20,6 @@ from app.core.health_interpreter import (
 
 load_dotenv()
 client = OpenAI(api_key=os.getenv("OPENAI_API_KEY"))
-
-ANALYSIS_MAX_TOKENS = 1500
 
 
 # ==========================================================
@@ -267,72 +262,53 @@ def get_fallback_routine(
         duration_sec = 30
     elif duration_min <= 30:
         base_sets, max_sets = 3, 4
-        rest_sec = 15 if difficulty_level != "하" else 20
-        duration_sec = 30
-    else:
+        rest_sec = 10 if difficulty_level != "하" else 15
+        duration_sec = 40
+    else:  # 60분
         base_sets, max_sets = 3, 5
-        rest_sec = 20 if difficulty_level != "하" else 25
-        duration_sec = 30 if difficulty_level != "상" else 40
+        rest_sec = 15
+        duration_sec = 45
 
     # ============================================
-    # 동적 운동 선택 (순환 반복)
+    # 운동 항목 생성 (순환 반복)
     # ============================================
     items = []
-    total_time_sec = 0
-    exercise_index = 0
+    total_sec = 0
+    idx = 0
 
-    while total_time_sec < target_seconds * 0.95:
-        ex = pool[exercise_index % len(pool)]
+    while total_sec < target_seconds * 0.8:
+        ex = pool[idx % len(pool)]
+        sets = base_sets
 
-        remaining_sec = target_seconds - total_time_sec
-        time_per_set = duration_sec + rest_sec
-        possible_sets = min(max_sets, max(base_sets, remaining_sec // time_per_set))
+        item_time = (duration_sec * sets) + (rest_sec * (sets - 1))
 
-        if possible_sets < base_sets:
-            if remaining_sec >= duration_sec:
-                possible_sets = 1
-            else:
-                break
+        if total_sec + item_time > target_seconds * 1.2:
+            break
 
-        exercise_time = (duration_sec * possible_sets) + (
-            rest_sec * (possible_sets - 1)
+        items.append(
+            {
+                "exercise_name": ex["exercise_name"],
+                "category": ex["category"],
+                "difficulty": ex["difficulty"],
+                "met": ex["met"],
+                "duration_sec": duration_sec,
+                "rest_sec": rest_sec,
+                "set_count": sets,
+                "reps": None,
+            }
         )
 
-        if total_time_sec + exercise_time > target_seconds * 1.1:
-            available_time = int(target_seconds * 1.05) - total_time_sec
-            possible_sets = max(1, available_time // time_per_set)
-            exercise_time = (duration_sec * possible_sets) + (
-                rest_sec * (possible_sets - 1)
-            )
-            if possible_sets < 1 or exercise_time <= 0:
-                break
-
-        item = {
-            "exercise_name": ex["exercise_name"],
-            "category": ex.get("category", [4]),
-            "difficulty": ex.get("difficulty", 3),
-            "met": ex["met"],
-            "duration_sec": duration_sec,
-            "rest_sec": rest_sec,
-            "set_count": possible_sets,
-            "reps": None,
-        }
-        items.append(item)
-        total_time_sec += exercise_time
-        exercise_index += 1
-
-        if len(items) >= 15:
-            break
+        total_sec += item_time
+        idx += 1
 
     # ============================================
     # 칼로리 계산
     # ============================================
-    avg_met = sum(item["met"] for item in items) / len(items) if items else 4
-    weight = raw.get("weight", 65) if raw else 65
-    total_calories = int(avg_met * weight * (duration_min / 60))
+    avg_met = sum(item["met"] for item in items) / max(len(items), 1)
+    total_calories = int(avg_met * 3.5 * 70 / 200 * (total_sec / 60))
 
     # ============================================
-    # 상세 분석 텍스트 생성 (build_analysis_text 사용!)
+    # 분석 텍스트 생성
     # ============================================
     if raw:
         analysis = build_analysis_text(
@@ -340,55 +316,48 @@ def get_fallback_routine(
             difficulty_level=difficulty_level,
             duration_min=duration_min,
             item_count=len(items),
-            total_time_sec=total_time_sec,
+            total_time_sec=total_sec,
         )
     else:
-        analysis = f"💪 {difficulty_level} 강도로 {duration_min}분 운동을 구성했습니다. 총 {len(items)}개 운동, 약 {total_time_sec//60}분"
+        analysis = f"안전 모드로 {difficulty_level} 난이도 운동 루틴을 생성했습니다."
 
-    # ============================================
-    # 결과 반환
-    # ============================================
     return {
         "analysis": analysis,
         "ai_recommended_routine": {
             "total_time_min": duration_min,
-            "total_time_sec": total_time_sec,
             "total_calories": total_calories,
             "items": items,
         },
         "used_data_ranked": {
-            "fallback": True,
-            "difficulty": difficulty_level,
-            "reason": "안전 모드 또는 LLM 검증 실패",
+            "primary": "fallback_routine",
+            "secondary": "rule_based",
         },
-        "detailed_health_report": build_detailed_health_analysis(raw) if raw else "",
     }
 
 
 # ==========================================================
-# 6) 운동 Seed (17종)
+# 6) SEED_JSON (17종 운동 목록)
 # ==========================================================
-EXERCISE_REFERENCE = [
-    {"name": "standing side crunch", "category": [2, 3], "difficulty": 3, "met": 4},
-    {"name": "standing knee up", "category": [1, 3], "difficulty": 3, "met": 3.8},
-    {"name": "burpee test", "category": [4], "difficulty": 5, "met": 8},
-    {"name": "step forward dynamic lunge", "category": [3], "difficulty": 4, "met": 4},
-    {"name": "step backward dynamic lunge", "category": [3], "difficulty": 4, "met": 4},
-    {"name": "side lunge", "category": [3], "difficulty": 5, "met": 5},
-    {"name": "cross lunge", "category": [3, 2], "difficulty": 4, "met": 3.8},
-    {"name": "good morning exercise", "category": [3], "difficulty": 5, "met": 5},
-    {"name": "lying leg raise", "category": [3, 2], "difficulty": 4, "met": 4},
-    {"name": "crunch", "category": [2], "difficulty": 4, "met": 4.5},
-    {"name": "bicycle crunch", "category": [3, 2], "difficulty": 5, "met": 5},
-    {"name": "scissor cross", "category": [2, 3], "difficulty": 4, "met": 4.5},
-    {"name": "hip thrust", "category": [3, 2], "difficulty": 3, "met": 3.5},
-    {"name": "plank", "category": [4], "difficulty": 5, "met": 8},
-    {"name": "push up", "category": [1, 2], "difficulty": 4, "met": 6},
-    {"name": "knee push up", "category": [1, 2], "difficulty": 3, "met": 5},
-    {"name": "Y-exercise", "category": [1, 2], "difficulty": 3, "met": 4.5},
+SEED_JSON = """
+[
+  {"exercise_name": "standing side crunch", "category": [2, 3], "difficulty": 3, "met": 4.0},
+  {"exercise_name": "standing knee up", "category": [1, 3], "difficulty": 3, "met": 3.8},
+  {"exercise_name": "burpee test", "category": [4], "difficulty": 5, "met": 8.0},
+  {"exercise_name": "step forward dynamic lunge", "category": [3], "difficulty": 4, "met": 4.0},
+  {"exercise_name": "side lunge", "category": [3], "difficulty": 5, "met": 5.0},
+  {"exercise_name": "cross lunge", "category": [3, 2], "difficulty": 4, "met": 3.8},
+  {"exercise_name": "good morning exercise", "category": [3], "difficulty": 5, "met": 5.0},
+  {"exercise_name": "lying leg raise", "category": [3, 2], "difficulty": 4, "met": 4.0},
+  {"exercise_name": "crunch", "category": [2], "difficulty": 4, "met": 4.5},
+  {"exercise_name": "bicycle crunch", "category": [3, 2], "difficulty": 5, "met": 5.0},
+  {"exercise_name": "scissor cross", "category": [2, 3], "difficulty": 4, "met": 4.5},
+  {"exercise_name": "hip thrust", "category": [3, 2], "difficulty": 3, "met": 3.5},
+  {"exercise_name": "plank", "category": [4], "difficulty": 5, "met": 8.0},
+  {"exercise_name": "push up", "category": [1, 2], "difficulty": 4, "met": 6.0},
+  {"exercise_name": "knee push up", "category": [1, 2], "difficulty": 3, "met": 5.0},
+  {"exercise_name": "Y-exercise", "category": [1, 2], "difficulty": 3, "met": 4.5}
 ]
-
-SEED_JSON = json.dumps(EXERCISE_REFERENCE, ensure_ascii=False)
+"""
 
 
 # ==========================================================
@@ -396,7 +365,7 @@ SEED_JSON = json.dumps(EXERCISE_REFERENCE, ensure_ascii=False)
 # ==========================================================
 def run_llm_analysis(
     summary: dict,
-    rag_result: dict | None,
+    user_id: str,
     difficulty_level: str,
     duration_min: int,
 ) -> dict:
@@ -410,19 +379,35 @@ def run_llm_analysis(
 
     raw = summary.get("raw", {})
 
-    # RAG 처리
-    similar_days = []
-    if rag_result and isinstance(rag_result, dict):
-        similar_days = rag_result.get("similar_days", []) or []
+    # RAG 검색
+    rag_query = build_rag_query(raw)
+
+    rag_result = search_similar_summaries(
+        query_dict=rag_query,
+        user_id=user_id,
+        top_k=3,
+    )
+
+    similar_days = rag_result.get("similar_days", [])
 
     # 규칙 기반 건강 해석
     health_context = build_health_context_for_llm(raw)
-    rag_context = analyze_rag_patterns(similar_days)
     exercise_rec = recommend_exercise_intensity(raw)
     health_score = calculate_health_score(raw)
 
     auto_difficulty = exercise_rec.get("recommended_level", difficulty_level)
     score = health_score.get("score", 50)
+
+    rag_strength = classify_rag_strength(similar_days)
+
+    if rag_strength == "none":
+        rag_context = ""
+    elif rag_strength == "weak":
+        rag_context = (
+            "📚 과거에 유사한 기록이 일부 있었으나, " "참고 수준으로만 반영했습니다."
+        )
+    else:  # strong
+        rag_context = analyze_rag_patterns(similar_days)
 
     # ============================================
     # 1) 강제 Fallback 조건
@@ -467,6 +452,46 @@ def run_llm_analysis(
 
     system_prompt = f"""당신은 피트니스 코치입니다.
 
+## 참고 정보
+- RAG 상태: {rag_strength}
+  * none  → 과거 데이터 참고 금지
+  * weak  → 참고 멘트 수준
+  * strong → 반복 패턴 반영 가능
+
+### RAG 상태별 analysis 톤 가이드
+
+[RAG none]
+- 오늘 하루 기준의 건강 상태 분석에 집중한다.
+- 과거 기록이나 누적 경향에 대한 언급은 하지 않는다.
+
+[RAG weak]
+- 최근 기록을 참고하되, 단정적인 표현은 피한다.
+- "가능성", "경향", "참고 수준"의 표현을 사용한다.
+
+[RAG strong]
+- 반복적으로 관찰된 생활 패턴을 반영한다.
+- 변화 방향 판단은 반드시
+  "수면 / 활동량 / 회복 지표" 중 하나 이상을 근거로 한다.
+- analysis에는 반드시 다음과 같은 누적 관점 표현 중 하나 이상을 포함한다:
+  • "최근 전반적으로"
+  • "반복적으로 나타나는 경향"
+  • "일시적이라기보다는 습관적 요인"
+
+- 각 운동 선택 이유는 반드시 다음 중 하나에 근거해야 한다:
+  1) 과거 기록에서 반복적으로 부족했던 요소
+  2) 최근 개선이 필요하다고 판단된 지표
+
+- 주의사항은 반드시 다음 중 하나를 포함해야 한다:
+  1) 과거 기록에서 반복된 위험 신호
+  2) 최근 회복 지표가 낮았던 항목
+
+- analysis는 반드시 다음을 모두 포함해야 한다:
+  1) 과거 기록과 비교한 변화 방향
+     (개선 / 유지 / 악화 중 하나 명시)
+  2) 오늘 운동 강도를 그 변화에 맞춘 이유
+  3) 반복 패턴이 있다면
+     "지속 필요" 또는 "조정 필요" 중 하나를 명확히 명시
+      
 ## 역할
 건강 데이터를 분석하여 맞춤형 운동 루틴을 JSON으로 처방합니다.
 
@@ -537,8 +562,8 @@ JSON만 출력. 시간 계산 정확히!"""
                 {"role": "system", "content": system_prompt},
                 {"role": "user", "content": user_prompt},
             ],
-            max_tokens=ANALYSIS_MAX_TOKENS,
-            temperature=0.3,
+            max_tokens=LLM_MAX_TOKENS,  # ✅ config.py의 설정값 사용
+            temperature=LLM_TEMPERATURE,  # ✅ config.py의 설정값 사용
         )
 
         raw_text = resp.choices[0].message.content

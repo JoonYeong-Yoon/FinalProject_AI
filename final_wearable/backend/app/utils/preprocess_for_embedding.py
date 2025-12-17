@@ -3,6 +3,8 @@ def summary_to_natural_text(summary: dict) -> str:
     VectorDB embedding 최적화용 문장 생성
     normalize_raw() 결과(raw dict)를 기반으로
     하루의 건강 데이터를 의미 단위로 연결한 문맥 있는 문장으로 변환한다.
+
+    ✅ 빈 문자열 방지: 데이터가 없어도 최소한의 텍스트 반환
     """
 
     raw = summary.get("raw", {})
@@ -111,4 +113,16 @@ def summary_to_natural_text(summary: dict) -> str:
     # ----------------------------------------
     # 최종 문장 합성
     # ----------------------------------------
-    return " ".join(parts)
+    result = " ".join(parts)
+
+    # ✅ 빈 문자열 방지 (OpenAI API는 빈 문자열 거부)
+    if not result or not result.strip():
+        # created_at이 있으면 날짜 정보라도 포함
+        created_at = summary.get("created_at", "")
+        if created_at:
+            date = created_at[:10]
+            return f"날짜: {date}에 건강 데이터가 기록되었습니다."
+        else:
+            return "건강 데이터가 기록되었습니다."
+
+    return result

@@ -8,7 +8,13 @@ import json
 from openai import OpenAI
 import os
 
-from app.config import LLM_MODEL_MAIN, LLM_TEMPERATURE, LLM_MAX_TOKENS
+from app.config import (
+    LLM_MODEL_MAIN,
+    LLM_TEMPERATURE,
+    LLM_MAX_TOKENS,
+    DEFAULT_DIFFICULTY,
+    DEFAULT_DURATION,
+)
 from app.core.chatbot_engine.persona import get_persona_prompt
 from app.core.vector_store import search_similar_summaries
 from app.core.llm_analysis import run_llm_analysis
@@ -70,7 +76,12 @@ def generate_fixed_response(user_id: str, question_type: str, character: str):
     # ================================
     if question_type == "today_recommendation":
         return _generate_today_recommendation(
-            character, recent_raw, recent_summary_text, summaries, health_interpretation
+            character,
+            recent_raw,
+            recent_summary_text,
+            summaries,
+            health_interpretation,
+            user_id,
         )
 
     # ================================
@@ -185,16 +196,16 @@ def _generate_weekly_report(
 
 
 def _generate_today_recommendation(
-    character, raw, summary_text, summaries, health_info
+    character, raw, summary_text, summaries, health_info, user_id
 ):
     """오늘 운동 추천 - 템플릿 기반 (LLM 추가 호출 없음!)"""
 
     # LLM 분석 1회 호출
     routine = run_llm_analysis(
         summary={"raw": raw, "summary_text": summary_text},
-        rag_result={"similar_days": summaries},
-        difficulty_level="중",
-        duration_min=30,
+        user_id=user_id,
+        difficulty_level=DEFAULT_DIFFICULTY,
+        duration_min=DEFAULT_DURATION,
     )
 
     analysis = routine.get("analysis", "오늘 컨디션에 맞는 루틴입니다.")

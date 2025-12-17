@@ -574,28 +574,42 @@ def build_health_context_for_llm(raw: dict) -> str:
 # 11) RAG 유사 패턴 분석
 # ============================================================
 def analyze_rag_patterns(similar_days: list) -> str:
-    """RAG에서 가져온 유사 패턴 분석"""
-    if not similar_days:
-        return "과거 유사 패턴 데이터가 없습니다."
+    """
+    RAG에서 가져온 과거 유사 패턴을
+    LLM 프롬프트용 '참고 텍스트'로 변환한다.
 
-    lines = ["[과거 유사 패턴 분석]"]
+    ⚠️ 규칙
+    - 판단하지 않는다
+    - 지시하지 않는다
+    - 참고 정보로만 서술한다
+    """
+    if not similar_days:
+        return "📚 과거 유사 패턴 참고: 해당 없음"
+
+    lines = ["📚 과거 유사 패턴 참고"]
 
     for i, day in enumerate(similar_days[:3], 1):
         date = day.get("date", "날짜 미상")
-        similarity = day.get("similarity", 0)
-        raw = day.get("raw", {})
+        raw = day.get("raw", {}) or {}
 
-        if raw:
-            steps = raw.get("steps", 0)
-            sleep_hr = raw.get("sleep_hr", 0)
-            calories = raw.get("active_calories", 0)
+        sleep = raw.get("sleep_hr", 0)
+        steps = raw.get("steps", 0)
+        score = raw.get("health_score", None)
 
-            lines.append(f"{i}. {date} (유사도: {similarity:.2f})")
-            if sleep_hr > 0:
-                lines.append(f"   - 수면: {sleep_hr}시간")
-            if steps > 0:
-                lines.append(f"   - 걸음수: {steps:,}보")
-            if calories > 0:
-                lines.append(f"   - 활동칼로리: {calories}kcal")
+        summary_parts = []
+
+        if sleep > 0:
+            summary_parts.append(f"수면 {sleep}시간")
+        if steps > 0:
+            summary_parts.append(f"걸음수 {steps:,}보")
+        if score:
+            summary_parts.append(f"건강 점수 {score}점")
+
+        if summary_parts:
+            lines.append(f"- {date}: " + ", ".join(summary_parts))
+        else:
+            lines.append(f"- {date}: 주요 데이터 요약 불가")
+
+    lines.append("※ 위 기록은 참고용이며, 현재 건강 데이터가 최우선입니다.")
 
     return "\n".join(lines)

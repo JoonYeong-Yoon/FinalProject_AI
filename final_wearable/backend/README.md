@@ -1,156 +1,385 @@
-# 서버 IP 수정
+# 🏋️ Wearable Health Data AI Trainer - Backend
 
-# 폴더, 파일 구조
+웨어러블 헬스 데이터 기반 AI 트레이너 서비스의 백엔드 시스템입니다.
 
-# 1. chat_api.py
+---
 
-- /api/chat → 자유형 챗봇
-- /api/chat/fixed → 고정형 질문(레포트, 추천 등)
-- ChatService를 호출하여 모든 비즈니스 로직을 넘김
+## 📁 폴더 구조
 
-# 2. upload_api.py
+```
+backend/
+├── main.py                 # FastAPI 앱 진입점
+├── config.py               # 환경설정 (LLM, API, ChromaDB)
+├── requirements.txt        # 의존성 패키지
+├── .env                    # 환경변수 (API 키 등)
+├── chroma_data/            # ChromaDB 영구 저장소
+│
+├── app/
+│   ├── api/                        # API 라우터 레이어
+│   │   ├── auto_upload_api.py      # 앱 자동 업로드 API
+│   │   ├── chat_api.py             # 챗봇 API
+│   │   ├── file_upload_api.py      # ZIP 파일 업로드 API
+│   │   ├── similar_api.py          # 유사도 검색 API
+│   │   └── user_api.py             # 사용자 분석 API
+│   │
+│   ├── core/                       # 핵심 비즈니스 로직
+│   │   ├── health_interpreter.py   # 규칙 기반 건강 해석기
+│   │   ├── llm_analysis.py         # LLM 분석 엔진
+│   │   ├── rag_query.py            # RAG 쿼리 빌더
+│   │   ├── vector_store.py         # ChromaDB 벡터 저장소
+│   │   ├── db_parser.py            # Samsung DB 파서
+│   │   ├── db_to_json.py           # SQLite → JSON 변환
+│   │   ├── unzipper.py             # ZIP 압축해제
+│   │   ├── adaptive_threshold.py   # 적응형 임계값 계산
+│   │   │
+│   │   └── chatbot_engine/         # 챗봇 엔진
+│   │       ├── chat_generator.py   # 자유형 챗봇 응답 생성
+│   │       ├── fixed_responses.py  # 고정형 질문 응답
+│   │       ├── intent_classifier.py # 의도 분류기
+│   │       ├── persona.py          # 캐릭터 페르소나
+│   │       └── rag_query.py        # 챗봇용 RAG 쿼리
+│   │
+│   ├── service/                    # 서비스 레이어
+│   │   ├── auto_upload_service.py  # 자동 업로드 처리
+│   │   ├── file_upload_service.py  # 파일 업로드 처리
+│   │   ├── chat_service.py         # 챗봇 서비스
+│   │   └── similar_service.py      # 유사도 검색 서비스
+│   │
+│   └── utils/                      # 유틸리티
+│       ├── preprocess.py           # 건강 데이터 전처리
+│       ├── preprocess_for_embedding.py # 임베딩용 텍스트 생성
+│       └── platform_detection.py   # 플랫폼 자동 감지
+```
 
-- .zip 또는 .db 파일 업로드 처리
-- 운동 난이도(difficulty), 운동시간(duration) 파라미터 전달
-- 내부 로직은 UploadService로 위임
-- UploadFile로 파일 수신
-- URL 쿼리파라미터(user_id, difficulty, duration) 읽기
-- service.process_upload() 호출
+---
 
-# 3. similar_api.py
+## 🔄 운동추천 서비스: Fallback + LLM 워크플로우
 
-- VectorDB 기반 유사도 검색 API
-- summary(dict)와 user_id를 받아 → SimilarService.find_similar 호출
+### 전체 흐름 트리
 
-# 4. chat_generator.py
+```
+run_llm_analysis(summary, user_id, difficulty_level, duration_min)
+│
+├─ 1. RAG 검색 (과거 유사 패턴 조회)
+│      └─ search_similar_summaries(query_dict, user_id, top_k=3)
+│          └─ 벡터 유사도 기반 과거 데이터 검색
+│
+├─ 2. 규칙 기반 건강 해석 (LLM 호출 없음)
+│      ├─ build_health_context_for_llm(raw)
+│      ├─ recommend_exercise_intensity(raw) → 권장 강도 결정
+│      └─ calculate_health_score(raw) → 건강 점수 계산
+│
+├─ 3. Fallback 조건 판단
+│      ├─ [조건 1] auto_difficulty == "하" → Fallback ✅
+│      ├─ [조건 2] score < 50 → Fallback ✅
+│      ├─ [조건 3] !check_data_quality(raw) → Fallback ✅
+│      │
+│      ├─ [조건 충족] → get_fallback_routine() 호출 → 즉시 반환
+│      └─ [조건 미충족] → LLM 호출 진행
+│
+├─ 4. LLM 호출 (OpenAI API)
+│      ├─ System Prompt 구성 (RAG 상태별 가이드)
+│      ├─ User Prompt 구성 (건강 데이터 + 운동 목록)
+│      └─ client.chat.completions.create()
+│
+├─ 5. LLM 결과 검증
+│      ├─ JSON 파싱 검증
+│      ├─ validate_routine() 호출
+│      │      ├─ 시간 검증: 목표 시간 ±20% 이내
+│      │      └─ MET 범위 검증: 난이도별 허용 범위
+│      │
+│      ├─ [검증 성공] → LLM 결과 반환
+│      └─ [검증 실패] → Fallback 반환
+│
+└─ 6. 예외 처리
+       └─ LLM 호출/파싱 실패 → Fallback 반환
+```
 
-- 챗봇 전체 로직의 메인 엔진
-- 사용자의 메시지를 intent로 분류하고
-- 캐릭터(persona)·감정(emotion)을 반영한 프롬프트를 만들고
-- 필요하면 RAG(요약 DB) 조회 또는 LLM 분석(run_llm_analysis)까지 수행해
-- 최종 GPT 응답을 생성하는 핵심 컨트롤러.
+### Fallback 조건 상세
 
-# 5. fixed_responses.py
+| 조건           | 코드                       | 설명                 | 이유                                         |
+| -------------- | -------------------------- | -------------------- | -------------------------------------------- |
+| 권장 강도 "하" | `auto_difficulty == "하"`  | 시스템이 저강도 권장 | 안전 모드 - LLM 없이 검증된 저강도 루틴 제공 |
+| 건강 점수 낮음 | `score < 50`               | 50점 미만            | 건강 상태 불량 - 안전한 규칙 기반 루틴 필요  |
+| 데이터 부족    | `!check_data_quality(raw)` | 수면/활동량 모두 0   | 분석 근거 부족 - LLM 판단 불가               |
 
-- “고정형 질문 API(/chat/fixed)”의 모든 답변 생성기.
-- 주간 리포트 / 오늘 운동 추천 / 심박수·수면 분석 등
-- VectorDB에서 최신 summary를 꺼내와
-- GPT에게 특정 형식의 답변을 생성시키는 정적 템플릿 엔진.
+### LLM 호출하는 경우
 
-# 6. intent_classifier.py
+- 권장 강도가 "중" 또는 "상"
+- 건강 점수 50점 이상
+- 수면 또는 활동량 데이터 존재
+- RAG 결과 활용 가능 (과거 패턴 참고)
 
-- 사용자 메시지의 목적(의도)을 3가지로 분류하는 GPT 기반 분류기.
-  1. health_query
-  2. routine_request
-  3. general_chat
-- 챗봇이 어떤 흐름으로 응답할지 결정하는 스위치 역할.
+---
 
-# 7. persona.py
+## 📊 파일별 주요 함수 목록
 
-- 캐릭터별 말투 프롬프트를 제공하는 모듈.
-- healing / power / expert / friend
-- 각 캐릭터의 말투·톤을 정의하는 system_prompt 역할.
+### `health_interpreter.py` - 규칙 기반 건강 해석기
 
-# 8. rag_query.py
+| 함수                                 | 용도                                |
+| ------------------------------------ | ----------------------------------- |
+| `interpret_sleep(raw)`               | 수면 시간 → 상태/레벨/권장사항 해석 |
+| `interpret_heart_rate(raw)`          | 심박수 → 피트니스 레벨 판정         |
+| `interpret_activity(raw)`            | 걸음수 → 활동 레벨 분류             |
+| `interpret_bmi(raw)`                 | BMI → 체형 카테고리 + 운동 추천     |
+| `interpret_oxygen(raw)`              | 산소포화도 해석                     |
+| `calculate_health_score(raw)`        | 종합 건강 점수 (0~100) 계산 ⭐      |
+| `recommend_exercise_intensity(raw)`  | 권장 운동 강도 (하/중/상) 결정 ⭐   |
+| `interpret_health_data(raw)`         | 위 함수들 종합 호출                 |
+| `build_health_context_for_llm(raw)`  | LLM 프롬프트용 컨텍스트 생성        |
+| `build_analysis_text(...)`           | Fallback용 상세 분석 텍스트 ✨      |
+| `analyze_rag_patterns(similar_days)` | RAG 유사 패턴 분석                  |
 
-- VectorDB(Chroma)에서 최근 건강 데이터 요약을 조회하는 RAG 모듈.
-- query_text + user_id로 health summary 검색
-- 챗봇이 “내 건강 데이터 알려줘” 같은 질문에 답할 수 있게 함.
+### `llm_analysis.py` - LLM 분석 엔진
 
-# 9. predict_sentiment.py
+| 함수                                                       | 용도                     |
+| ---------------------------------------------------------- | ------------------------ |
+| `run_llm_analysis(summary, user_id, difficulty, duration)` | 메인 분석 함수 ⭐        |
+| `check_data_quality(raw)`                                  | 최소 데이터 품질 확인    |
+| `validate_routine(result, difficulty, target_min)`         | LLM 결과 검증 (시간/MET) |
+| `get_fallback_routine(difficulty, duration, raw)`          | Fallback 루틴 생성 ✨    |
+| `build_detailed_health_analysis(raw)`                      | 상세 건강 리포트 생성    |
+| `clean_json_text(text)`                                    | JSON 마크다운 정리       |
+| `try_parse_json(text)`                                     | 안전한 JSON 파싱         |
 
-- 한국어 감정 분석(기쁨, 분노 등 7개) 수행
-- 입력 텍스트 → tokenizer → 모델 → argmax → 감정 라벨 반환
+### `vector_store.py` - VectorDB 관리
 
-# 10. model_loader.py
+| 함수                                                     | 용도                          |
+| -------------------------------------------------------- | ----------------------------- |
+| `save_daily_summary(summary, user_id, source)`           | 단일 summary 저장 (upsert) ⭐ |
+| `save_daily_summaries_batch(summaries, user_id, source)` | 배치 저장                     |
+| `search_similar_summaries(query_dict, user_id, top_k)`   | 유사 패턴 검색 ⭐             |
+| `embed_text(text)`                                       | 단일 텍스트 임베딩 생성       |
+| `batch_embed_texts(texts)`                               | 배치 임베딩 생성              |
+| `get_cached_embedding(text)`                             | 캐시된 임베딩 반환            |
 
-- KcBERT-base 모델과 Tokenizer 로딩
-- 감정 분류 라벨 수는 7개로 설정
-- model.eval()로 inference 모드
+### `preprocess.py` - 데이터 전처리
 
-# 11. db_to_json.py
+| 함수                                                   | 용도                              |
+| ------------------------------------------------------ | --------------------------------- |
+| `preprocess_health_json(raw_json, date_int, platform)` | 메인 전처리 함수 ⭐               |
+| `normalize_raw(raw_json)`                              | 23개 필드 정규화 (None 안전 처리) |
+| `generate_summary_text(raw)`                           | 요약 텍스트 생성                  |
+| `epoch_day_to_date_string(epoch_day)`                  | Epoch Day → YYYY-MM-DD 변환       |
 
-- SQLite DB 파일을 읽어서 테이블 전체를 JSON(dict) 형태로 변환하는 모듈
-- 매우 일반화된 DB → JSON 변환 모듈
+### `file_upload_service.py` - ZIP 파일 처리
 
-# 12. unzipper.py
+| 함수                                                | 용도                    |
+| --------------------------------------------------- | ----------------------- |
+| `process_file(file, user_id, difficulty, duration)` | 메인 처리 함수 ⭐       |
+| `detect_platform(filename, db_json)`                | Apple/Samsung 자동 감지 |
+| `run_blocking(func, *args)`                         | 동기 함수 비동기 실행   |
+| `get_or_create_user_id(user_id)`                    | user_id 생성/검증       |
 
-- ZIP 파일을 임시 폴더에 압축 해제한 뒤 내부에서 .db 파일을 자동 검색하여 경로 반환
-- 사용자가 ZIP으로 업로드하든 DB로 업로드하든 동일한 파이프라인에서 처리
+### `auto_upload_service.py` - 앱 API 처리
 
-# 13. vector_store.py (변경 예정)
+| 함수                                                           | 용도                |
+| -------------------------------------------------------------- | ------------------- |
+| `process_json(json_data, user_id, date, difficulty, duration)` | JSON 데이터 처리 ⭐ |
+| `get_or_create_user_id(user_id)`                               | user_id 생성/검증   |
 
-- ChromaDB 기반 Embedding 저장·검색 모듈 (Vector DB)
-- 구성 요소
-  1. 안전한 OpenAI Client 생성
-  2. 안전한 Chroma Collection 생성
-  3. 임베딩 생성 (OpenAI text-embedding-3-large)
-  4. summary 저장
-  5. summary 유사 검색
-- 다음을 수행:
-  1. summary JSON → string → embedding
-  2. doc_id = user_id_summary_timestamp
-  3. 유저별로 검색(where={"user_id": user_id})
+### `chat_generator.py` - 자유형 챗봇
 
-# 14. llm_analysis.py
+| 함수                                                             | 용도                   |
+| ---------------------------------------------------------------- | ---------------------- |
+| `generate(user_id, message, character)`                          | 메인 응답 생성 함수 ⭐ |
+| `_call_openai(system_prompt, user_prompt, max_tokens)`           | OpenAI API 호출        |
+| `_build_system_prompt(persona_prompt, context_type)`             | 시스템 프롬프트 구성   |
+| `_format_rag_brief(rag)`                                         | RAG 결과 간소화        |
+| `_format_routine_response(character, analysis, routine, health)` | 루틴 응답 포맷팅       |
 
-- GPT-4.1 기반 운동 분석 + 운동 루틴 생성 엔진
-- summary / raw_json / 난이도 / 운동시간을 기반으로 LLM에게 운동 루틴 JSON을 생성시키는 모듈
-- 운동 17종 시드데이터를 제공
-- 절대 규칙(시간, 난이도별 MET, 칼로리 공식)을 LLM에게 강제
-- JSON 파싱 실패 시
-  1. JSON 정제(clean)
-  2. 직접 파싱
-  3. 실패 시 LLM을 이용한 JSON 복구(fix)
-- 이를 통해 LLM 오류로 인한 실패 확률을 최소화.
+### `fixed_responses.py` - 고정형 챗봇
 
-# 15. chat_service.py
+| 함수                                                         | 용도                |
+| ------------------------------------------------------------ | ------------------- |
+| `generate_fixed_response(user_id, question_type, character)` | 메인 응답 생성 ⭐   |
+| `_get_no_data_response(character)`                           | 데이터 없을 때 응답 |
+| `_generate_weekly_report(...)`                               | 주간 건강 리포트    |
+| `_generate_today_recommendation(...)`                        | 오늘 운동 추천 ⭐   |
+| `_generate_steps_report(...)`                                | 걸음수 분석         |
+| `_generate_sleep_report(...)`                                | 수면 분석           |
+| `_generate_heart_rate_report(...)`                           | 심박수 분석         |
+| `_generate_health_score_report(...)`                         | 건강 점수 리포트    |
 
-- 자유형 챗봇 + 고정형 챗봇 기능을 실제로 수행하는 서비스 레이어
-- 감정 분석 추가(KcBERT 기반 predict_sentiment() 호출 / 감정(emotion) 파악)
-- ChatGenerator 호출(캐릭터 스타일 + 메시지 내용 + 감정 기반 응답 생성)
-- 고정형 질문(generate_fixed_response() 호출 (정적 분석))
+### `intent_classifier.py` - 의도 분류기
 
-# 16. upload_service.py
+| 함수                          | 용도                      |
+| ----------------------------- | ------------------------- |
+| `classify_intent(message)`    | 메인 의도 분류 함수 ⭐    |
+| `_rule_based_intent(message)` | 규칙 기반 분류 (GPT 없음) |
+| `_cache_get(key)`             | 캐시 조회                 |
+| `_cache_set(key, intent)`     | 캐시 저장                 |
 
-- DB 업로드 → Summary 생성 → VectorDB 저장 → LLM 분석
-- 전체 파이프라인을 순서대로 수행하는 가장 중심이 되는 로직
-- 세부 단계
-  1. user_id 생성/유지
-  2. 업로드된 ZIP/DB 임시폴더에 저장
-  3. ZIP을 압축 해제하여 .db 추출
-  4. .db → Raw JSON 변환 (db_to_json)
-  5. Raw JSON → Summary 생성 (preprocess)
-  6. Summary를 VectorDB(Chroma)에 저장
-  7. summary + raw_json → LLM 분석(run_llm_analysis)
-  8. 임시파일 정리
-  9. 최종 결과(JSON) 반환
+### `db_parser.py` - Samsung DB 파서
 
-# 17. similar_service.py
+| 함수                                        | 용도                       |
+| ------------------------------------------- | -------------------------- |
+| `parse_db_json_to_raw_data_by_day(db_json)` | 날짜별 raw 데이터 생성 ⭐  |
+| `parse_db_json_to_raw_data(db_json)`        | 최신 1일치만 반환 (호환용) |
+| `_init_day_bucket()`                        | 날짜별 데이터 버킷 초기화  |
 
-- VectorDB(Chroma)에 저장된 summary_embedding 기반으로 유사한 날짜의 summary를 조회
-- search_similar_summaries() 호출
-- 결과를 가공하여 API 응답 형태로 정리
+### `rag_query.py` (core) - RAG 쿼리 빌더
 
-# 18. preprocess.py
+| 함수                                  | 용도                          |
+| ------------------------------------- | ----------------------------- |
+| `build_rag_query(raw)`                | RAG 검색용 query dict 생성 ⭐ |
+| `classify_rag_strength(similar_days)` | RAG 결과 신뢰 수준 분류       |
 
-- Raw JSON(DB 데이터)에서 요약 Summary 데이터 제작
-- Summary 항목
-  1. steps
-  2. distance
-  3. calories_total
-  4. calories_active
-  5. heart_rate
-  6. resting heart rate
-  7. hrv
-  8. sleep
-  9. exercise session
-- 즉, “LLM 입력용으로 정제된 요약 데이터”를 만드는 단계.
+---
 
-# 19. main.py
+## 🗄️ VectorDB 데이터 확인 방법
 
-- FastAPI 앱 생성
-- CORS 설정
-- API 라우터 등록(upload, chat, similar)
-- 루트 엔드포인트 / 제공
-- 프로젝트 전체 백엔드의 시작점
+### 1. API 엔드포인트 사용
+
+```bash
+# 전체 VectorDB 상태 확인
+curl http://localhost:8000/api/vectordb/status
+
+# 특정 사용자 데이터 조회
+curl http://localhost:8000/api/vectordb/user/{user_id}
+
+# 사용자 raw history 조회
+curl "http://localhost:8000/api/user/raw-history?user_id={user_id}"
+```
+
+### 2. Python 스크립트 사용
+
+```python
+# check_vectordb.py
+from app.core.vector_store import collection, search_similar_summaries
+
+# 전체 데이터 개수
+print(f"총 데이터: {collection.count()}개")
+
+# 특정 사용자 데이터 조회
+result = collection.get(where={"user_id": "user@email.com"})
+
+# 날짜별 정렬
+dates = sorted([m["date"] for m in result["metadatas"]], reverse=True)
+print(f"최신 날짜: {dates[0]}")
+
+for meta in result["metadatas"][:5]:
+    print(f"날짜: {meta['date']}, 출처: {meta['source']}, 점수: {meta['health_score']}")
+
+# 유사 패턴 검색
+similar = search_similar_summaries(
+    query_dict={"query": "health summary"},
+    user_id="user@email.com",
+    top_k=5
+)
+for day in similar["similar_days"]:
+    print(f"{day['date']}: {day['summary_text'][:50]}...")
+```
+
+### 3. main.py 내장 API
+
+```python
+# GET /api/vectordb/status
+# 응답 예시:
+{
+    "status": "ok",
+    "total_count": 408,
+    "users": {
+        "user@email.com": {
+            "count": 30,
+            "dates": ["2025-12-17", "2025-12-16", ...]
+        }
+    }
+}
+```
+
+---
+
+## 🗃️ VectorDB 데이터 구성
+
+### Document ID 형식
+
+```python
+doc_id = f"{user_id}_{date}_{source}"
+# 예: "user@email.com_2025-12-17_api_samsung"
+# 예: "user@email.com_2025-12-16_zip_samsung"
+```
+
+### Metadata 구조
+
+```python
+metadata = {
+    # 식별 정보
+    "user_id": "user@email.com",
+    "date": "2025-12-17",              # YYYY-MM-DD
+    "timestamp": 20251217,              # 정렬용 정수
+
+    # 분석 결과
+    "health_score": 75,                 # 건강 점수 (0-100)
+    "recommended_intensity": "중",      # 권장 강도 (하/중/상)
+    "fallback": False,                  # Fallback 사용 여부
+
+    # 데이터 출처
+    "source": "api_samsung",            # 데이터 출처
+    "platform": "samsung",              # 플랫폼
+    "updated_at": "20251217143000",     # 마지막 업데이트
+
+    # 원본 데이터
+    "summary_json": "{\"raw\": {...}, \"summary_text\": \"...\"}"
+}
+```
+
+### source 종류
+
+| source        | 설명                              |
+| ------------- | --------------------------------- |
+| `api_samsung` | 삼성 앱 API 전송 (Health Connect) |
+| `api_apple`   | 애플 앱 API 전송 (HealthKit)      |
+| `api`         | 앱 API 전송 (플랫폼 미구분)       |
+| `zip_samsung` | 삼성 ZIP 파일 업로드              |
+| `zip_apple`   | 애플 ZIP 파일 업로드              |
+
+### 중복 방지 메커니즘
+
+```python
+# vector_store.py
+# 같은 날짜, 같은 출처는 덮어쓰기 (upsert)
+doc_id = f"{user_id}_{date}_{source}"  # timestamp 제거!
+
+collection.upsert(
+    ids=[doc_id],
+    embeddings=[embedding],
+    documents=[embedding_text],
+    metadatas=[metadata],
+)
+```
+
+---
+
+## 🚀 서버 실행
+
+```bash
+# 1. 의존성 설치
+pip install -r requirements.txt
+
+# 2. 환경변수 설정 (.env 파일)
+OPENAI_API_KEY=sk-xxx
+LLM_MODEL=gpt-4o-mini
+LLM_TEMPERATURE=0.3
+LLM_MAX_TOKENS=2048
+ALLOWED_ORIGINS=http://localhost:3000
+
+# 3. 서버 실행
+uvicorn main:app --reload --host 0.0.0.0 --port 8000
+```
+
+---
+
+## 📡 API 엔드포인트 요약
+
+| 엔드포인트                     | 메서드 | 설명                   |
+| ------------------------------ | ------ | ---------------------- |
+| `/api/file/upload`             | POST   | ZIP/DB 파일 업로드     |
+| `/api/auto/upload`             | POST   | 앱 JSON 데이터 업로드  |
+| `/api/user/latest-analysis`    | GET    | 최신 데이터 AI 분석    |
+| `/api/user/raw-history`        | GET    | 사용자 전체 히스토리   |
+| `/api/chat`                    | POST   | 자유형 챗봇            |
+| `/api/chat/fixed`              | POST   | 고정형 챗봇            |
+| `/api/similar`                 | POST   | 유사 패턴 검색         |
+| `/api/vectordb/status`         | GET    | VectorDB 상태          |
+| `/api/vectordb/user/{user_id}` | GET    | 사용자 VectorDB 데이터 |

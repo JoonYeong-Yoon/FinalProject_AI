@@ -7,62 +7,141 @@ from app.utils.preprocess import preprocess_health_json
 from app.core.vector_store import save_daily_summary
 from app.core.llm_analysis import run_llm_analysis
 
-executor = ThreadPoolExecutor()
+
+executor = ThreadPoolExecutor(max_workers=4)
 
 
 async def run_blocking(func, *args):
+    """동기 함수를 비동기로 실행"""
     loop = asyncio.get_event_loop()
     return await loop.run_in_executor(executor, lambda: func(*args))
 
 
 class AutoUploadService:
     """
-    앱에서 직접 전송한 JSON Health 데이터를 처리하는 서비스
-    (JSON → Summary → VectorDB → LLM 분석)
+    앱에서 직접 전송한 JSON Health 데이터를 처리하는 서비스 (날짜별 처리)
+
+    ✅ 개선 사항:
+    1. 날짜별 개별 처리 (ZIP과 동일한 방식)
+    2. 각 날짜마다 VectorDB에 별도 저장
+    3. platform='samsung' 자동 설정
     """
 
     @staticmethod
     def get_or_create_user_id(user_id: str | None):
-        return user_id if user_id else str(uuid.uuid4())
+        if not user_id or not user_id.strip():
+            return str(uuid.uuid4())
+        return user_id
 
     async def process_json(
         self,
         json_data: dict,
         user_id: str | None,
+        date: str,  # ✅ YYYY-MM-DD 형식
         difficulty: str = "중",
         duration: int = 30,
     ):
-        # 1) 이메일 기반 user_id 확보
         user_id = self.get_or_create_user_id(user_id)
 
-        # 2) Summary 생성 (CPU 작업 → run_blocking)
+        print(f"\n{'='*60}")
+        print(f"📥 API 데이터 처리 시작: {date}")
+        print(f"{'='*60}")
+        print(f"User ID: {user_id}")
+        print(f"Date: {date}")
+        print(f"Difficulty: {difficulty}, Duration: {duration}분")
+        print(f"Raw data keys: {list(json_data.keys())}")
+
+        # 1️⃣ Summary 생성 (날짜 포함)
         try:
-            summary = await run_blocking(preprocess_health_json, json_data)
+            print(f"\n[STEP 1] Summary 생성 중... (날짜: {date})")
+
+            # ✅ 날짜 문자열을 date_int로 변환 (YYYYMMDD)
+            # 예: "2025-12-17" → 20251217
+            date_int = int(date.replace("-", ""))
+
+            latest_summary = await run_blocking(
+                preprocess_health_json,
+                json_data,
+                date_int,  # ✅ 날짜 전달
+                "samsung",  # ✅ 플랫폼 자동 설정
+            )
+
+            print(f"✅ Summary 생성 완료")
+            print(f"   created_at: {latest_summary.get('created_at')}")
+            print(f"   date: {date}")
+
         except Exception as e:
+            print(f"❌ Summary 생성 실패: {str(e)}")
+            import traceback
+
+            traceback.print_exc()
             raise HTTPException(500, f"Summary 생성 실패: {str(e)}")
 
-        # 3) VectorDB 저장
+        # 2️⃣ Vector DB 저장
         try:
-            await run_blocking(save_daily_summary, summary, user_id)
+            print(f"\n[STEP 2] Vector DB 저장 중...")
+            save_result = await run_blocking(
+                save_daily_summary, latest_summary, user_id
+            )
+            print(f"✅ Vector DB 저장 완료: {save_result}")
+
         except Exception as e:
+            print(f"❌ Vector DB 저장 실패: {str(e)}")
+            import traceback
+
+            traceback.print_exc()
             raise HTTPException(500, f"Vector DB 저장 실패: {str(e)}")
 
-        # 4) LLM 분석
+        # 3️⃣ LLM 분석 (최신 날짜에만 실행)
+        # ✅ 최신 날짜 데이터인 경우에만 LLM 분석 실행
+        # 앱에서 여러 날짜를 전송할 때 마지막(최신) 데이터만 분석
         try:
+            print(f"\n[STEP 3] LLM 분석 시작...")
+            print(f"   summary keys: {list(latest_summary.keys())}")
+            print(f"   user_id: {user_id}")
+            print(f"   difficulty: {difficulty}")
+            print(f"   duration: {duration}")
+
             llm_result = await run_blocking(
                 run_llm_analysis,
-                summary,
-                {},  # RAG 결과 없음 → 빈 dict
-                difficulty,  # difficulty_level
-                duration,  # duration_min
+                latest_summary,
+                user_id,
+                difficulty,
+                duration,
             )
+
+            print(f"✅ LLM 분석 완료")
+            print(f"   result keys: {list(llm_result.keys())}")
+
+            # 결과 검증
+            if "analysis" not in llm_result:
+                print("[WARN] LLM 결과에 'analysis' 필드가 없습니다.")
+            if "ai_recommended_routine" not in llm_result:
+                print("[WARN] LLM 결과에 'ai_recommended_routine' 필드가 없습니다.")
+
         except Exception as e:
-            raise HTTPException(500, f"LLM 분석 실패: {str(e)}")
+            print(f"❌ LLM 분석 실패: {str(e)}")
+            import traceback
+
+            traceback.print_exc()
+            # ✅ LLM 분석 실패해도 데이터는 저장됨
+            llm_result = {
+                "analysis": "LLM 분석 실패",
+                "ai_recommended_routine": {},
+                "detailed_health_report": "",
+            }
+
+        # 4️⃣ 최종 응답
+        print(f"\n{'='*60}")
+        print(f"✅ {date} 데이터 처리 완료")
+        print(f"{'='*60}\n")
 
         return {
             "success": True,
-            "message": "자동 업로드 및 분석 성공",
             "user_id": user_id,
-            "summary": summary,
-            "llm_result": llm_result,
+            "date": date,
+            "summary": latest_summary,
+            "analysis": llm_result.get("analysis", ""),
+            "ai_recommended_routine": llm_result.get("ai_recommended_routine", {}),
+            "detailed_health_report": llm_result.get("detailed_health_report", ""),
         }
