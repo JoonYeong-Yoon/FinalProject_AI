@@ -386,3 +386,11 @@ uvicorn main:app --reload --host 0.0.0.0 --port 8000
 | `/api/similar`                 | POST   | 유사 패턴 검색         |
 | `/api/vectordb/status`         | GET    | VectorDB 상태          |
 | `/api/vectordb/user/{user_id}` | GET    | 사용자 VectorDB 데이터 |
+
+# 헬스커넥트 앱(삼성) 파일
+
+https://drive.google.com/file/d/1hi8NnbKfdOIvAicIdPqycBVbirFDkuN_/view?usp=drive_link
+
+# 헬스킷 앱(애플) 파일
+
+https://drive.google.com/file/d/12ZCi7mxL3ySzUSKyNsyc9vNOHv2GdWCB/view?usp=drive_link
