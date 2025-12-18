@@ -95,18 +95,20 @@ auto_upload_api.py
     │
     └─ auto_upload_service.py → process_json()
         │
-        ├─ 1. Summary 생성
+        ├─ 1. 플랫폼 자동 감지
+        │      └─ platform = "samsung" (삼성 Health Connect)
+        │      └─ platform = "apple" (애플 HealthKit)
+        │      ※ 현재는 auto_upload_api.py에서 구분되어 전달됨
+        │
+        ├─ 2. Summary 생성
         │      └─ preprocess.py → preprocess_health_json()
         │          ├─ date_int 변환: "2025-12-17" → 20251217
-        │          └─ platform = "samsung" 자동 설정
+        │          └─ platform 정보 활용
         │
-        ├─ 2. VectorDB 저장
+        ├─ 3. VectorDB 저장
         │      └─ vector_store.py → save_daily_summary()
-        │          ├─ source = "api" (기본값)
-        │          └─ doc_id: "{user_id}_{date}_api"
-        │
-        └─ 3. LLM 분석
-               └─ llm_analysis.py → run_llm_analysis()
+        │          ├─ source = f"api_{platform}"  # "api_samsung" or "api_apple"
+        │          └─ doc_id: "{user_id}_{date}_api_{platform}"
 ```
 
 **앱 전송 데이터 형식**:
@@ -140,7 +142,13 @@ const payload = {
 
 **API 엔드포인트**: `POST /api/auto/upload` (삼성과 동일)
 
-**백엔드 처리 흐름**: 삼성과 동일
+**백엔드 처리 흐름**: 삼성과 동일하나, platform = "apple"로 설정
+
+※ 차이점:
+
+- platform: "apple"
+- source: "api_apple"
+- doc_id: "user@email.com_2025-12-17_api_apple"
 
 **앱 전송 데이터 형식**:
 
@@ -174,13 +182,14 @@ raw_json = HealthData(
 
 ### 플랫폼별 데이터 소스 비교
 
-| 구분            | Samsung (ZIP)                 | Samsung (API)         | Apple (API)           |
-| --------------- | ----------------------------- | --------------------- | --------------------- |
-| **데이터 형태** | SQLite DB                     | JSON                  | JSON                  |
-| **날짜 형식**   | Epoch Day (19992)             | YYYY-MM-DD            | YYYY-MM-DD            |
-| **처리 경로**   | db_parser → preprocess        | preprocess 직접       | preprocess 직접       |
-| **source 값**   | `zip_samsung`                 | `api`                 | `api`                 |
-| **doc_id 예시** | `user_2025-12-17_zip_samsung` | `user_2025-12-17_api` | `user_2025-12-17_api` |
+| 구분            | Samsung (ZIP)                  | Samsung (API)                 | Apple (API)                 |
+| --------------- | ------------------------------ | ----------------------------- | --------------------------- |
+| **데이터 형태** | SQLite DB                      | JSON                          | JSON                        |
+| **날짜 형식**   | Epoch Day (19992) → YYYY-MM-DD | YYYY-MM-DD                    | YYYY-MM-DD                  |
+| **처리 경로**   | db_parser → preprocess         | preprocess 직접               | preprocess 직접             |
+| **플랫폼 감지** | detect_platform() 함수         | 자동 설정 ("samsung")         | 자동 설정 ("apple")         |
+| **source 값**   | `zip_samsung`                  | `api_samsung`                 | `api_apple`                 |
+| **doc_id 예시** | `user_2025-12-17_zip_samsung`  | `user_2025-12-17_api_samsung` | `user_2025-12-17_api_apple` |
 
 ---
 

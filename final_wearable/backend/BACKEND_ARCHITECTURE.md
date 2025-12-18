@@ -234,6 +234,28 @@ file_upload_service.py
                 health_interpreter.py
 ```
 
+[API Upload Flow]
+
+auto_upload_api.py
+│
+▼
+auto_upload_service.py
+│
+├──────────────┬──────────────┬──────────────┐
+▼ ▼ ▼ ▼
+preprocess.py vector_store.py llm_analysis.py platform_detection
+│ │ │ │
+│ │ │ │
+▼ ▼ ▼ │
+normalize save_daily run_llm "samsung"
+\_raw \_summary \_analysis or "apple"
+│ │ │ │
+└──────────────┴──────────────┴──────────────┘
+│
+▼
+VectorDB (ChromaDB)
+source: "api_samsung" or "api_apple"
+
 ### 2. 분석 플로우
 
 ```

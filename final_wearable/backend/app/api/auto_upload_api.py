@@ -22,6 +22,11 @@ async def upload_json(payload: UploadRequest):
     ✅ 수정: 날짜별로 개별 업로드
     - 앱에서 최근 7일치를 날짜별로 반복 호출
     - 각 날짜마다 벡터DB에 별도 저장
+
+    📱 플랫폼 구분:
+    - 삼성: useHealthConnect.ts → raw_json 전송 → platform="samsung"
+    - 애플: HealthUploadModel.swift → raw_json 전송 → platform="apple"
+    - VectorDB source: "api_samsung" or "api_apple"
     """
     print("=" * 60)
     print("📥 API 데이터 업로드 요청")

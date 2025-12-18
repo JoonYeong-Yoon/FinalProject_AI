@@ -80,10 +80,18 @@ class AutoUploadService:
         # 2️⃣ Vector DB 저장
         try:
             print(f"\n[STEP 2] Vector DB 저장 중...")
+
+            # ✅ 플랫폼별 source 구분
+            platform = latest_summary.get("platform", "unknown")
+            source = f"api_{platform}"  # "api_samsung" or "api_apple"
+
+            print(f"   플랫폼: {platform}")
+            print(f"   Source: {source}")
+
             save_result = await run_blocking(
-                save_daily_summary, latest_summary, user_id
+                save_daily_summary, latest_summary, user_id, source
             )
-            print(f"✅ Vector DB 저장 완료: {save_result}")
+            print(f"✅ Vector DB 저장 완료 (source: {source}): {save_result}")
 
         except Exception as e:
             print(f"❌ Vector DB 저장 실패: {str(e)}")

@@ -66,11 +66,13 @@ run_llm_analysis(summary, user_id, difficulty_level, duration_min)
 │
 ├─ 2. 규칙 기반 건강 해석 (LLM 호출 없음)
 │      ├─ build_health_context_for_llm(raw)
-│      ├─ recommend_exercise_intensity(raw) → 권장 강도 결정
-│      └─ calculate_health_score(raw) → 건강 점수 계산
+│      ├─ recommend_exercise_intensity(raw)
+│      │      └─ recommended_level 결정 → "하" / "중" / "상" ⭐
+│      └─ calculate_health_score(raw)
+│             └─ score 계산 → 0~100점 ⭐
 │
-├─ 3. Fallback 조건 판단
-│      ├─ [조건 1] auto_difficulty == "하" → Fallback ✅
+├─ 3. Fallback 조건 판단 (recommended_level과 score 활용)
+│      ├─ [조건 1] recommended_level == "하" → Fallback ✅
 │      ├─ [조건 2] score < 50 → Fallback ✅
 │      ├─ [조건 3] !check_data_quality(raw) → Fallback ✅
 │      │
@@ -97,11 +99,11 @@ run_llm_analysis(summary, user_id, difficulty_level, duration_min)
 
 ### Fallback 조건 상세
 
-| 조건           | 코드                       | 설명                 | 이유                                         |
-| -------------- | -------------------------- | -------------------- | -------------------------------------------- |
-| 권장 강도 "하" | `auto_difficulty == "하"`  | 시스템이 저강도 권장 | 안전 모드 - LLM 없이 검증된 저강도 루틴 제공 |
-| 건강 점수 낮음 | `score < 50`               | 50점 미만            | 건강 상태 불량 - 안전한 규칙 기반 루틴 필요  |
-| 데이터 부족    | `!check_data_quality(raw)` | 수면/활동량 모두 0   | 분석 근거 부족 - LLM 판단 불가               |
+| 조건           | 코드                        | 설명                 | 이유                                         |
+| -------------- | --------------------------- | -------------------- | -------------------------------------------- |
+| 권장 강도 "하" | `recommended_level == "하"` | 시스템이 저강도 권장 | 안전 모드 - LLM 없이 검증된 저강도 루틴 제공 |
+| 건강 점수 낮음 | `score < 50`                | 50점 미만            | 건강 상태 불량 - 안전한 규칙 기반 루틴 필요  |
+| 데이터 부족    | `!check_data_quality(raw)`  | 수면/활동량 모두 0   | 분석 근거 부족 - LLM 판단 불가               |
 
 ### LLM 호출하는 경우
 
@@ -296,8 +298,10 @@ for day in similar["similar_days"]:
 
 ```python
 doc_id = f"{user_id}_{date}_{source}"
-# 예: "user@email.com_2025-12-17_api_samsung"
-# 예: "user@email.com_2025-12-16_zip_samsung"
+# 예: "user@email.com_2025-12-17_api_samsung"  (삼성 앱 API)
+# 예: "user@email.com_2025-12-17_api_apple"     (애플 앱 API)
+# 예: "user@email.com_2025-12-16_zip_samsung"  (삼성 ZIP)
+# 예: "user@email.com_2025-12-15_zip_apple"    (애플 ZIP)
 ```
 
 ### Metadata 구조
@@ -330,7 +334,6 @@ metadata = {
 | ------------- | --------------------------------- |
 | `api_samsung` | 삼성 앱 API 전송 (Health Connect) |
 | `api_apple`   | 애플 앱 API 전송 (HealthKit)      |
-| `api`         | 앱 API 전송 (플랫폼 미구분)       |
 | `zip_samsung` | 삼성 ZIP 파일 업로드              |
 | `zip_apple`   | 애플 ZIP 파일 업로드              |
 

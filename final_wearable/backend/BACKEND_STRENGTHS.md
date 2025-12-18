@@ -38,7 +38,15 @@ run_llm_analysis()
 
 ```python
 # llm_analysis.py
-if auto_difficulty == "하":
+# 1. 규칙 기반 건강 해석
+exercise_rec = recommend_exercise_intensity(raw)
+recommended_level = exercise_rec.get("recommended_level", "중")
+
+health_score_result = calculate_health_score(raw)
+score = health_score_result.get("score", 50)
+
+# 2. Fallback 조건 판단
+if recommended_level == "하":
     use_fallback = True
     fallback_reason = "권장 강도 '하' (안전 모드)"
 elif score < 50:
@@ -49,7 +57,7 @@ elif not check_data_quality(raw):
     fallback_reason = "데이터 부족 (수면/활동량 없음)"
 
 if use_fallback:
-    return get_fallback_routine(auto_difficulty, duration_min, raw)
+    return get_fallback_routine(recommended_level, duration_min, raw)
 ```
 
 ---
@@ -245,23 +253,21 @@ collection.upsert(
 ```python
 # preprocess.py
 def normalize_raw(raw_json: dict) -> dict:
+    # ✅ 안전한 값 추출 함수 (내부 함수)
+    def safe_get(key, default=0):
+        """None을 안전하게 처리"""
+        value = raw_json.get(key, default)
+        return value if value is not None else default
+
     return {
         # 수면 (플랫폼별 변환)
-        "sleep_min": safe_get(raw_json, "sleep_min") or
-                     safe_get(raw_json, "sleep") or 0,
-        "sleep_hr": safe_get(raw_json, "sleep_hr") or
-                    (safe_get(raw_json, "sleepHours", 0) / 3600) or 0,
+        "sleep_min": safe_get("sleep_min") or safe_get("sleep") or 0,
+        "sleep_hr": safe_get("sleep_hr") or (safe_get("sleepHours") / 3600 if safe_get("sleepHours") > 0 else 0),
 
         # 활동 (단위 통합)
-        "distance_km": safe_get(raw_json, "distance_km") or
-                       (safe_get(raw_json, "distance", 0) / 1000) or 0,
+        "distance_km": safe_get("distance_km") or (safe_get("distance") / 1000),
         # ...
     }
-
-def safe_get(d: dict, key: str, default=0):
-    """None 값을 default로 변환"""
-    val = d.get(key)
-    return val if val is not None else default
 ```
 
 ---
