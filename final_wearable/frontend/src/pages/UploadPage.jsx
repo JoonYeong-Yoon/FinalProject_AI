@@ -1,23 +1,20 @@
 import React, { useState } from 'react';
 
+const BACKEND_URL = 'http://127.0.0.1:8000';
+
 function UploadPage() {
+  // ✅ 로그인 상태
+  const [userId, setUserId] = useState('');
+  const [isLoggedIn, setIsLoggedIn] = useState(false);
+
+  // 업로드 관련 상태
   const [file, setFile] = useState(null);
   const [result, setResult] = useState(null);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState(null);
 
-  // 사용자 ID
-  const [userId, setUserId] = useState('test123');
-
   const [difficulty, setDifficulty] = useState('중');
   const [duration, setDuration] = useState(30);
-  const [uploadMode, setUploadMode] = useState('manual_file');
-
-  // 실제 raw_json 입력
-  const [rawJsonInput, setRawJsonInput] = useState('');
-
-  // ✅ 백엔드 서버 주소 (환경에 맞게 수정)
-  const BACKEND_URL = 'http://192.168.0.15:8000'; // 또는 'http://localhost:8000'
 
   // 운동명 매핑
   const exerciseNameKo = {
@@ -40,119 +37,63 @@ function UploadPage() {
     'Y-exercise': 'Y-운동',
   };
 
-  // ----------------------------------------------------
-  // 공통 API 호출 (개선 버전)
-  // ----------------------------------------------------
-  const callApi = async (url, options) => {
-    setResult(null);
-    setError(null);
-    setLoading(true);
-
-    console.log('[DEBUG] API 호출:', url);
-    console.log('[DEBUG] Options:', options);
-
-    try {
-      const response = await fetch(url, options);
-      const responseBody = await response.text();
-
-      console.log('[DEBUG] 응답 상태:', response.status);
-      console.log('[DEBUG] 응답 본문:', responseBody);
-
-      if (!response.ok) {
-        throw new Error(`서버 응답 오류 (${response.status}): ${responseBody}`);
-      }
-
-      let data;
-      try {
-        data = JSON.parse(responseBody);
-      } catch (e) {
-        throw new Error(`JSON 파싱 실패: ${responseBody}`);
-      }
-
-      console.log('[SUCCESS] 파싱 완료:', data);
-      setResult(data);
-
-      // 디버그 정보 출력
-      if (data.debug_info) {
-        console.log('[DEBUG] 서버 디버그 정보:', data.debug_info);
-      }
-    } catch (err) {
-      console.error('[ERROR] API 호출 실패:', err);
-      setError(err.message);
-      alert('API 호출 오류: ' + err.message);
+  // ================================
+  // 로그인 처리
+  // ================================
+  const handleLogin = () => {
+    if (!userId.trim()) {
+      alert('이메일을 입력해주세요.');
+      return;
     }
-
-    setLoading(false);
+    setIsLoggedIn(true);
   };
 
-  // ----------------------------------------------------
+  const handleLogout = () => {
+    setIsLoggedIn(false);
+    setUserId('');
+    setResult(null);
+    setFile(null);
+    setError(null);
+  };
+
+  // ================================
   // ZIP/DB 파일 업로드
-  // ----------------------------------------------------
+  // ================================
   const handleFileSubmit = async () => {
     if (!file) {
       alert('파일을 선택하세요.');
       return;
     }
 
-    // ✅ user_id 검증
-    const validUserId = userId && userId.trim() ? userId : 'test123';
+    setResult(null);
+    setError(null);
+    setLoading(true);
 
     const formData = new FormData();
     formData.append('file', file);
 
-    const url = `${BACKEND_URL}/api/file/upload?user_id=${validUserId}&difficulty=${difficulty}&duration=${duration}`;
-
-    await callApi(url, {
-      method: 'POST',
-      body: formData,
-    });
-  };
-
-  // ----------------------------------------------------
-  // Health Connect / HealthKit JSON 입력 (개선!)
-  // ----------------------------------------------------
-  const handleAutoSubmit = async () => {
-    let parsedJson;
+    const url = `${BACKEND_URL}/api/file/upload?user_id=${userId}&difficulty=${difficulty}&duration=${duration}`;
 
     try {
-      parsedJson = JSON.parse(rawJsonInput);
-    } catch (e) {
-      alert('❌ JSON 파싱 오류: 올바른 JSON 형식인지 확인하세요.');
-      return;
+      const response = await fetch(url, {
+        method: 'POST',
+        body: formData,
+      });
+
+      const responseBody = await response.text();
+
+      if (!response.ok) {
+        throw new Error(`서버 응답 오류 (${response.status}): ${responseBody}`);
+      }
+
+      const data = JSON.parse(responseBody);
+      setResult(data);
+    } catch (err) {
+      console.error('[ERROR] 업로드 실패:', err);
+      setError(err.message);
     }
 
-    console.log('[DEBUG] 전송할 JSON:', parsedJson);
-
-    // ✅ user_id 검증
-    const validUserId = userId && userId.trim() ? userId : 'test123';
-
-    const body = {
-      user_id: validUserId,
-      raw_json: parsedJson,
-      summary: null,
-      difficulty,
-      duration,
-    };
-
-    // ✅ 절대 경로 사용!
-    const url = `${BACKEND_URL}/api/auto/upload`;
-
-    await callApi(url, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(body),
-    });
-  };
-
-  // ----------------------------------------------------
-  // 서버에서 최신 데이터 가져오기
-  // ----------------------------------------------------
-  const fetchLatestData = async () => {
-    // ✅ user_id 검증
-    const validUserId = userId && userId.trim() ? userId : 'test123';
-    const url = `${BACKEND_URL}/api/user/latest-summary?user_id=${validUserId}`;
-
-    await callApi(url, { method: 'GET' });
+    setLoading(false);
   };
 
   const secToMinSec = (sec) => {
@@ -161,518 +102,606 @@ function UploadPage() {
     return `${m}분 ${s}초`;
   };
 
-  // ----------------------------------------------------
-  // 데이터 형식 가이드
-  // ----------------------------------------------------
-  const getDataFormatGuide = () => {
-    if (uploadMode === 'health_connect') {
-      return `삼성 Health Connect 데이터 형식:
-{
-  "sleep": 420,          // 수면 (분)
-  "steps": 8500,         // 걸음수
-  "weight": 70500,       // 체중 (그램)
-  "height": 175,         // 키 (cm)
-  "distance": 5400,      // 이동거리 (미터)
-  "heartRate": 75,       // 심박수
-  "restingHeartRate": 60,// 휴식기 심박수
-  "calories": 300,       // 활동 칼로리
-  "totalCaloriesBurned": 2100  // 총 소모 칼로리
-}`;
-    } else {
-      return `Apple HealthKit 데이터 형식:
-{
-  "sleepHours": 7.0,     // 수면 (시간)
-  "steps": 8500,         // 걸음수
-  "weight": 70.5,        // 체중 (kg)
-  "height": 175,         // 키 (cm)
-  "distance": 5.4,       // 이동거리 (km)
-  "heartRate": 75,       // 심박수
-  "restingHeartRate": 60,// 휴식기 심박수
-  "activeEnergy": 300,   // 활동 칼로리
-  "bmi": 23.0            // BMI (선택)
-}`;
-    }
-  };
+  // ================================
+  // 로그인 화면
+  // ================================
+  if (!isLoggedIn) {
+    return (
+      <div
+        style={{
+          minHeight: '100vh',
+          background: 'linear-gradient(135deg, #667eea 0%, #764ba2 100%)',
+          padding: '40px 20px',
+          display: 'flex',
+          alignItems: 'center',
+          justifyContent: 'center',
+        }}
+      >
+        <div
+          style={{
+            background: 'white',
+            borderRadius: '20px',
+            padding: '40px',
+            boxShadow: '0 10px 40px rgba(0,0,0,0.2)',
+            maxWidth: '450px',
+            width: '100%',
+          }}
+        >
+          <div style={{ textAlign: 'center', marginBottom: '30px' }}>
+            <div style={{ fontSize: '48px', marginBottom: '10px' }}>📁</div>
+            <h2 style={{ color: '#333', marginBottom: '10px' }}>
+              ZIP 파일 업로드
+            </h2>
+            <p style={{ color: '#666', fontSize: '14px' }}>
+              Samsung Health Connect ZIP 파일을 업로드하여 분석합니다
+            </p>
+          </div>
 
-  // ----------------------------------------------------
-  // 렌더링
-  // ----------------------------------------------------
+          <div style={{ marginBottom: '20px' }}>
+            <label
+              style={{
+                display: 'block',
+                marginBottom: '8px',
+                fontWeight: '600',
+                color: '#555',
+              }}
+            >
+              이메일 (User ID)
+            </label>
+            <input
+              type="email"
+              value={userId}
+              onChange={(e) => setUserId(e.target.value)}
+              placeholder="example@email.com"
+              style={{
+                width: '100%',
+                padding: '15px',
+                fontSize: '16px',
+                border: '2px solid #e0e0e0',
+                borderRadius: '10px',
+                outline: 'none',
+                boxSizing: 'border-box',
+              }}
+              onKeyDown={(e) => e.key === 'Enter' && handleLogin()}
+              onFocus={(e) => (e.target.style.borderColor = '#667eea')}
+              onBlur={(e) => (e.target.style.borderColor = '#e0e0e0')}
+            />
+            <p style={{ fontSize: '12px', color: '#888', marginTop: '8px' }}>
+              💡 분석 결과가 이 이메일로 저장됩니다. 챗봇에서 동일한 이메일로
+              로그인하세요.
+            </p>
+          </div>
+
+          <button
+            onClick={handleLogin}
+            style={{
+              width: '100%',
+              padding: '16px',
+              fontSize: '18px',
+              fontWeight: 'bold',
+              color: 'white',
+              background: 'linear-gradient(135deg, #667eea 0%, #764ba2 100%)',
+              border: 'none',
+              borderRadius: '12px',
+              cursor: 'pointer',
+              boxShadow: '0 4px 15px rgba(102, 126, 234, 0.4)',
+            }}
+          >
+            로그인
+          </button>
+        </div>
+      </div>
+    );
+  }
+
+  // ================================
+  // 메인 업로드 화면
+  // ================================
   return (
     <div
       style={{
-        padding: '40px',
-        background: '#111',
         minHeight: '100vh',
-        color: 'white',
+        background: 'linear-gradient(135deg, #667eea 0%, #764ba2 100%)',
+        padding: '40px 20px',
       }}
     >
-      <h2>🏋️ AI 맞춤 운동 추천 서비스</h2>
-      <p style={{ color: '#888', fontSize: '14px' }}>
-        백엔드 서버: {BACKEND_URL}
-      </p>
-
-      {/* 에러 메시지 */}
-      {error && (
+      <div style={{ maxWidth: '1200px', margin: '0 auto' }}>
+        {/* 헤더 */}
         <div
           style={{
-            background: '#c0392b',
-            padding: '15px',
-            borderRadius: '8px',
-            marginBottom: '20px',
+            display: 'flex',
+            justifyContent: 'space-between',
+            alignItems: 'center',
+            marginBottom: '30px',
+            color: 'white',
           }}
         >
-          ⚠️ 오류: {error}
+          <div>
+            <h1 style={{ fontSize: '36px', fontWeight: 'bold', margin: 0 }}>
+              📁 ZIP 파일 업로드
+            </h1>
+            <p style={{ opacity: 0.9, marginTop: '5px' }}>
+              Samsung Health Connect ZIP 파일을 업로드하여 건강 데이터를
+              분석합니다
+            </p>
+          </div>
+          <div style={{ display: 'flex', alignItems: 'center', gap: '15px' }}>
+            <span
+              style={{
+                background: 'rgba(255,255,255,0.2)',
+                padding: '10px 20px',
+                borderRadius: '25px',
+                fontSize: '14px',
+              }}
+            >
+              👤 {userId}
+            </span>
+            <button
+              onClick={handleLogout}
+              style={{
+                padding: '10px 20px',
+                background: 'rgba(255,255,255,0.1)',
+                border: '1px solid rgba(255,255,255,0.3)',
+                borderRadius: '8px',
+                color: 'white',
+                cursor: 'pointer',
+              }}
+            >
+              로그아웃
+            </button>
+          </div>
         </div>
-      )}
 
-      <div style={{ marginTop: '10px' }}>
-        <button
-          onClick={fetchLatestData}
+        {/* 업로드 카드 */}
+        <div
           style={{
-            padding: '10px 20px',
-            background: '#9b59b6',
-            borderRadius: '6px',
-            marginBottom: '10px',
-            cursor: 'pointer',
-            border: '1px solid #555',
-            color: 'white',
+            background: 'white',
+            borderRadius: '20px',
+            padding: '30px',
+            boxShadow: '0 10px 40px rgba(0,0,0,0.1)',
+            marginBottom: '30px',
           }}
         >
-          🔄 서버에서 최신 분석 결과 불러오기
-        </button>
-      </div>
+          <h2 style={{ marginBottom: '20px', color: '#333' }}>📤 파일 선택</h2>
 
-      {/* 데이터 소스 선택 */}
-      <div style={{ margin: '20px 0', display: 'flex', gap: '10px' }}>
-        <button
-          onClick={() => setUploadMode('manual_file')}
-          style={{
-            padding: '10px 15px',
-            background: uploadMode === 'manual_file' ? '#3498db' : '#333',
-            border: '1px solid #555',
-            borderRadius: '5px',
-            color: 'white',
-            cursor: 'pointer',
-          }}
-        >
-          📁 수동 파일 업로드 (ZIP/DB)
-        </button>
+          {/* 파일 선택 */}
+          <div style={{ marginBottom: '20px' }}>
+            <input
+              type="file"
+              accept=".zip,.db"
+              onChange={(e) => setFile(e.target.files[0])}
+              style={{
+                width: '100%',
+                padding: '15px',
+                border: '2px dashed #ccc',
+                borderRadius: '10px',
+                background: '#f8f9fa',
+                cursor: 'pointer',
+              }}
+            />
+            {file && (
+              <p
+                style={{
+                  marginTop: '10px',
+                  color: '#667eea',
+                  fontWeight: '600',
+                }}
+              >
+                ✅ 선택된 파일: {file.name}
+              </p>
+            )}
+          </div>
 
-        <button
-          onClick={() => setUploadMode('health_connect')}
-          style={{
-            padding: '10px 15px',
-            background: uploadMode === 'health_connect' ? '#3498db' : '#333',
-            border: '1px solid #555',
-            borderRadius: '5px',
-            color: 'white',
-            cursor: 'pointer',
-          }}
-        >
-          🤖 Health Connect 데이터 입력
-        </button>
-
-        <button
-          onClick={() => setUploadMode('health_kit')}
-          style={{
-            padding: '10px 15px',
-            background: uploadMode === 'health_kit' ? '#3498db' : '#333',
-            border: '1px solid #555',
-            borderRadius: '5px',
-            color: 'white',
-            cursor: 'pointer',
-          }}
-        >
-          🍎 Apple HealthKit 데이터 입력
-        </button>
-      </div>
-
-      <hr style={{ borderColor: '#333' }} />
-
-      {/* 공통 설정 */}
-      <div
-        style={{
-          display: 'flex',
-          gap: '30px',
-          margin: '20px 0',
-          flexWrap: 'wrap',
-          alignItems: 'center',
-        }}
-      >
-        <div>
-          <label>사용자 ID: </label>
-          <input
-            type="text"
-            value={userId}
-            onChange={(e) => setUserId(e.target.value)}
+          {/* 난이도 & 시간 */}
+          <div
             style={{
-              padding: '8px',
-              marginLeft: '10px',
-              color: 'black',
-              width: '150px',
-              borderRadius: '4px',
+              display: 'grid',
+              gridTemplateColumns: '1fr 1fr',
+              gap: '20px',
+              marginBottom: '20px',
             }}
-            placeholder="user123"
-          />
-        </div>
-
-        <div>
-          <label>운동 난이도: </label>
-          <select
-            value={difficulty}
-            onChange={(e) => setDifficulty(e.target.value)}
-            style={{ padding: '8px', marginLeft: '10px', borderRadius: '4px' }}
           >
-            <option value="하">하 (초보)</option>
-            <option value="중">중 (보통)</option>
-            <option value="상">상 (고급)</option>
-          </select>
-        </div>
+            <div>
+              <label
+                style={{
+                  display: 'block',
+                  marginBottom: '8px',
+                  fontWeight: '600',
+                  color: '#555',
+                }}
+              >
+                운동 난이도
+              </label>
+              <select
+                value={difficulty}
+                onChange={(e) => setDifficulty(e.target.value)}
+                style={{
+                  width: '100%',
+                  padding: '12px',
+                  fontSize: '16px',
+                  border: '2px solid #e0e0e0',
+                  borderRadius: '10px',
+                  outline: 'none',
+                  cursor: 'pointer',
+                }}
+              >
+                <option value="하">하 (초보자)</option>
+                <option value="중">중 (일반인)</option>
+                <option value="상">상 (숙련자)</option>
+              </select>
+            </div>
 
-        <div>
-          <label>운동 시간: </label>
-          <select
-            value={duration}
-            onChange={(e) => setDuration(Number(e.target.value))}
-            style={{ padding: '8px', marginLeft: '10px', borderRadius: '4px' }}
-          >
-            <option value={10}>10분</option>
-            <option value={30}>30분</option>
-            <option value={60}>60분</option>
-          </select>
-        </div>
-      </div>
+            <div>
+              <label
+                style={{
+                  display: 'block',
+                  marginBottom: '8px',
+                  fontWeight: '600',
+                  color: '#555',
+                }}
+              >
+                운동 시간
+              </label>
+              <select
+                value={duration}
+                onChange={(e) => setDuration(Number(e.target.value))}
+                style={{
+                  width: '100%',
+                  padding: '12px',
+                  fontSize: '16px',
+                  border: '2px solid #e0e0e0',
+                  borderRadius: '10px',
+                  outline: 'none',
+                  cursor: 'pointer',
+                }}
+              >
+                <option value={10}>10분</option>
+                <option value={30}>30분</option>
+                <option value={60}>60분</option>
+              </select>
+            </div>
+          </div>
 
-      {/* ZIP/DB 업로드 */}
-      {uploadMode === 'manual_file' && (
-        <div
-          style={{
-            padding: '20px',
-            border: '1px dashed #555',
-            borderRadius: '8px',
-            marginTop: '20px',
-          }}
-        >
-          <h3>① ZIP/DB 파일 업로드</h3>
-          <p style={{ color: '#888', fontSize: '14px' }}>
-            삼성 Health Connect에서 내보낸 ZIP 파일을 업로드하세요
-          </p>
-          <input
-            type="file"
-            accept=".db,.zip"
-            onChange={(e) => setFile(e.target.files[0])}
-            style={{ margin: '20px 0', color: 'white' }}
-          />
-          <br />
+          {/* 업로드 버튼 */}
           <button
             onClick={handleFileSubmit}
             disabled={!file || loading}
             style={{
-              padding: '10px 20px',
-              background: file && !loading ? '#e74c3c' : '#555',
-              cursor: file && !loading ? 'pointer' : 'not-allowed',
-              border: 'none',
-              borderRadius: '6px',
+              width: '100%',
+              padding: '16px',
+              fontSize: '18px',
+              fontWeight: 'bold',
               color: 'white',
+              background:
+                file && !loading
+                  ? 'linear-gradient(135deg, #667eea 0%, #764ba2 100%)'
+                  : '#ccc',
+              border: 'none',
+              borderRadius: '12px',
+              cursor: file && !loading ? 'pointer' : 'not-allowed',
+              boxShadow:
+                file && !loading
+                  ? '0 4px 15px rgba(102, 126, 234, 0.4)'
+                  : 'none',
             }}
           >
-            {loading ? '⏳ 분석 중...' : '🚀 업로드 & 분석'}
+            {loading ? '⏳ 분석 중...' : '🚀 업로드 & 분석 시작'}
           </button>
-        </div>
-      )}
 
-      {/* 실제 Raw JSON 입력 */}
-      {(uploadMode === 'health_connect' || uploadMode === 'health_kit') && (
-        <div
-          style={{
-            padding: '20px',
-            border: '1px dashed #555',
-            borderRadius: '8px',
-            marginTop: '20px',
-          }}
-        >
-          <h3>② Health Data JSON 입력</h3>
-          <p style={{ color: '#888', fontSize: '14px' }}>
-            {uploadMode === 'health_connect'
-              ? '삼성 Health Connect에서 추출한 JSON 데이터를 입력하세요'
-              : 'Apple HealthKit에서 추출한 JSON 데이터를 입력하세요'}
-          </p>
-
-          {/* 데이터 형식 가이드 */}
-          <details
-            style={{
-              background: '#2c3e50',
-              padding: '12px',
-              borderRadius: '6px',
-              marginBottom: '15px',
-              cursor: 'pointer',
-            }}
-          >
-            <summary style={{ fontWeight: 'bold', color: '#3498db' }}>
-              📖 데이터 형식 가이드 (클릭하여 펼치기)
-            </summary>
-            <pre
+          {/* 에러 메시지 */}
+          {error && (
+            <div
               style={{
-                marginTop: '10px',
-                padding: '10px',
-                background: '#1e272e',
-                borderRadius: '4px',
-                fontSize: '13px',
-                lineHeight: '1.5',
-                overflow: 'auto',
-                color: '#ecf0f1',
+                marginTop: '20px',
+                padding: '15px',
+                background: '#fee',
+                border: '2px solid #fcc',
+                borderRadius: '10px',
+                color: '#c00',
               }}
             >
-              {getDataFormatGuide()}
-            </pre>
-          </details>
-
-          <textarea
-            placeholder={`실제 건강 데이터를 JSON 형식으로 입력하세요...\n\n위의 "데이터 형식 가이드"를 참고하세요.`}
-            value={rawJsonInput}
-            onChange={(e) => setRawJsonInput(e.target.value)}
-            style={{
-              width: '100%',
-              height: '350px', // 250px → 350px
-              padding: '15px',
-              borderRadius: '8px',
-              marginTop: '10px',
-              background: '#1a1a1a', // 더 어두운 배경
-              color: '#00ff00', // 밝은 초록색
-              border: '2px solid #444', // 더 두꺼운 테두리
-              fontFamily: 'Consolas, Monaco, monospace',
-              fontSize: '14px',
-              lineHeight: '1.6',
-              resize: 'vertical', // 세로 크기 조절 가능
-            }}
-          />
-
-          <button
-            onClick={handleAutoSubmit}
-            disabled={!rawJsonInput || loading}
-            style={{
-              padding: '10px 20px',
-              background: rawJsonInput && !loading ? '#2ecc71' : '#555',
-              marginTop: '10px',
-              border: 'none',
-              borderRadius: '6px',
-              color: 'white',
-              cursor: rawJsonInput && !loading ? 'pointer' : 'not-allowed',
-            }}
-          >
-            {loading ? '⏳ 분석 중...' : '🚀 데이터 전송 & 분석'}
-          </button>
+              ❌ {error}
+            </div>
+          )}
         </div>
-      )}
 
-      {loading && (
-        <div style={{ marginTop: '30px', textAlign: 'center' }}>
+        {/* 로딩 상태 */}
+        {loading && (
           <div
             style={{
-              display: 'inline-block',
-              padding: '20px',
-              background: '#2c3e50',
-              borderRadius: '10px',
+              background: 'white',
+              borderRadius: '20px',
+              padding: '40px',
+              textAlign: 'center',
+              boxShadow: '0 10px 40px rgba(0,0,0,0.1)',
             }}
           >
-            <p style={{ fontSize: '18px', margin: 0 }}>
-              🤖 AI가 건강 데이터를 분석 중입니다...
+            <div style={{ fontSize: '48px', marginBottom: '20px' }}>🤖</div>
+            <p style={{ fontSize: '18px', color: '#333' }}>
+              AI가 건강 데이터를 분석 중입니다...
             </p>
-            <p style={{ color: '#888', fontSize: '14px', marginTop: '10px' }}>
+            <p style={{ color: '#888', fontSize: '14px' }}>
               잠시만 기다려 주세요!
             </p>
           </div>
-        </div>
-      )}
+        )}
 
-      {/* 결과 출력 */}
-      {result && !loading && (
-        <div style={{ marginTop: '40px' }}>
-          <h2 style={{ color: '#3498db' }}>📊 분석 결과</h2>
-
-          {/* 디버그 정보 */}
-          {result.debug_info && (
+        {/* 결과 표시 */}
+        {result && !loading && (
+          <div>
+            {/* 요약 정보 */}
             <div
               style={{
-                background: '#34495e',
-                padding: '10px',
-                borderRadius: '6px',
+                background: 'white',
+                borderRadius: '20px',
+                padding: '30px',
                 marginBottom: '20px',
-                fontSize: '12px',
+                boxShadow: '0 10px 40px rgba(0,0,0,0.1)',
               }}
             >
-              <strong>🔍 디버그 정보:</strong>
-              <pre style={{ margin: '5px 0' }}>
-                {JSON.stringify(result.debug_info, null, 2)}
-              </pre>
-            </div>
-          )}
-
-          {/* 분석 텍스트 */}
-          <h3 style={{ marginTop: '30px' }}>💬 AI 분석</h3>
-          <div
-            style={{
-              background: '#1e272e',
-              padding: '20px',
-              borderRadius: '8px',
-              whiteSpace: 'pre-wrap',
-              lineHeight: '1.6',
-              border: '1px solid #333',
-            }}
-          >
-            {result.llm_result?.analysis ?? '❌ 분석 결과 없음'}
-          </div>
-
-          {/* 운동 루틴 */}
-          <h3 style={{ marginTop: '30px' }}>💪 AI 추천 운동 루틴</h3>
-          {result.llm_result?.ai_recommended_routine ? (
-            <div>
+              <h2 style={{ marginBottom: '15px', color: '#333' }}>
+                📊 업로드 결과
+              </h2>
               <div
                 style={{
-                  display: 'flex',
-                  gap: '30px',
-                  marginBottom: '20px',
-                  padding: '15px',
-                  background: '#2c3e50',
-                  borderRadius: '8px',
+                  display: 'grid',
+                  gridTemplateColumns: 'repeat(auto-fit, minmax(150px, 1fr))',
+                  gap: '15px',
                 }}
               >
-                <div>
-                  <strong>⏱️ 총 운동 시간:</strong>{' '}
-                  {result.llm_result.ai_recommended_routine.total_time_min}분
+                <div
+                  style={{
+                    background: '#f8f9fa',
+                    padding: '20px',
+                    borderRadius: '12px',
+                    textAlign: 'center',
+                  }}
+                >
+                  <div
+                    style={{
+                      fontSize: '24px',
+                      fontWeight: 'bold',
+                      color: '#667eea',
+                    }}
+                  >
+                    {result.total_days_saved || 1}일
+                  </div>
+                  <div style={{ fontSize: '14px', color: '#666' }}>
+                    저장된 데이터
+                  </div>
                 </div>
-                <div>
-                  <strong>🔥 예상 소모 칼로리:</strong>{' '}
-                  {result.llm_result.ai_recommended_routine.total_calories} kcal
+                <div
+                  style={{
+                    background: '#f8f9fa',
+                    padding: '20px',
+                    borderRadius: '12px',
+                    textAlign: 'center',
+                  }}
+                >
+                  <div
+                    style={{
+                      fontSize: '24px',
+                      fontWeight: 'bold',
+                      color: '#667eea',
+                    }}
+                  >
+                    {result.platform || 'samsung'}
+                  </div>
+                  <div style={{ fontSize: '14px', color: '#666' }}>플랫폼</div>
+                </div>
+                <div
+                  style={{
+                    background: '#f8f9fa',
+                    padding: '20px',
+                    borderRadius: '12px',
+                    textAlign: 'center',
+                  }}
+                >
+                  <div
+                    style={{
+                      fontSize: '24px',
+                      fontWeight: 'bold',
+                      color: '#667eea',
+                    }}
+                  >
+                    {result.latest_date ||
+                      result.date_range?.split(' ~ ')[1] ||
+                      '-'}
+                  </div>
+                  <div style={{ fontSize: '14px', color: '#666' }}>
+                    최신 날짜
+                  </div>
                 </div>
               </div>
+            </div>
 
-              <table
+            {/* AI 분석 */}
+            <div
+              style={{
+                background: 'white',
+                borderRadius: '20px',
+                padding: '30px',
+                marginBottom: '20px',
+                boxShadow: '0 10px 40px rgba(0,0,0,0.1)',
+              }}
+            >
+              <h2 style={{ marginBottom: '15px', color: '#333' }}>
+                🤖 AI 분석
+              </h2>
+              <div
                 style={{
-                  width: '100%',
-                  borderCollapse: 'collapse',
-                  background: '#1e272e',
+                  fontSize: '16px',
+                  lineHeight: '1.8',
+                  color: '#555',
+                  whiteSpace: 'pre-line',
                 }}
               >
-                <thead>
-                  <tr style={{ background: '#34495e' }}>
-                    <th style={{ padding: '12px', border: '1px solid #444' }}>
-                      운동명
-                    </th>
-                    <th style={{ padding: '12px', border: '1px solid #444' }}>
-                      난이도
-                    </th>
-                    <th style={{ padding: '12px', border: '1px solid #444' }}>
-                      MET
-                    </th>
-                    <th style={{ padding: '12px', border: '1px solid #444' }}>
-                      운동시간
-                    </th>
-                    <th style={{ padding: '12px', border: '1px solid #444' }}>
-                      휴식시간
-                    </th>
-                    <th style={{ padding: '12px', border: '1px solid #444' }}>
-                      세트수
-                    </th>
-                  </tr>
-                </thead>
+                {result.llm_result?.analysis ?? '❌ 분석 결과 없음'}
+              </div>
+            </div>
 
-                <tbody>
+            {/* 운동 루틴 */}
+            {result.llm_result?.ai_recommended_routine && (
+              <div
+                style={{
+                  background: 'white',
+                  borderRadius: '20px',
+                  padding: '30px',
+                  boxShadow: '0 10px 40px rgba(0,0,0,0.1)',
+                }}
+              >
+                <h2 style={{ marginBottom: '10px', color: '#333' }}>
+                  💪 맞춤 운동 루틴
+                </h2>
+
+                {/* 루틴 요약 */}
+                <div
+                  style={{
+                    display: 'grid',
+                    gridTemplateColumns: 'repeat(auto-fit, minmax(200px, 1fr))',
+                    gap: '15px',
+                    marginBottom: '30px',
+                  }}
+                >
+                  <div
+                    style={{
+                      background:
+                        'linear-gradient(135deg, #667eea 0%, #764ba2 100%)',
+                      color: 'white',
+                      padding: '20px',
+                      borderRadius: '12px',
+                      textAlign: 'center',
+                    }}
+                  >
+                    <div style={{ fontSize: '32px', fontWeight: 'bold' }}>
+                      {result.llm_result.ai_recommended_routine.total_time_min}
+                      분
+                    </div>
+                    <div style={{ fontSize: '14px', opacity: 0.9 }}>
+                      총 운동 시간
+                    </div>
+                  </div>
+
+                  <div
+                    style={{
+                      background:
+                        'linear-gradient(135deg, #f093fb 0%, #f5576c 100%)',
+                      color: 'white',
+                      padding: '20px',
+                      borderRadius: '12px',
+                      textAlign: 'center',
+                    }}
+                  >
+                    <div style={{ fontSize: '32px', fontWeight: 'bold' }}>
+                      {result.llm_result.ai_recommended_routine.total_calories}
+                    </div>
+                    <div style={{ fontSize: '14px', opacity: 0.9 }}>
+                      예상 칼로리 (kcal)
+                    </div>
+                  </div>
+
+                  <div
+                    style={{
+                      background:
+                        'linear-gradient(135deg, #4facfe 0%, #00f2fe 100%)',
+                      color: 'white',
+                      padding: '20px',
+                      borderRadius: '12px',
+                      textAlign: 'center',
+                    }}
+                  >
+                    <div style={{ fontSize: '32px', fontWeight: 'bold' }}>
+                      {result.llm_result.ai_recommended_routine.items?.length ||
+                        0}
+                      개
+                    </div>
+                    <div style={{ fontSize: '14px', opacity: 0.9 }}>
+                      운동 종목
+                    </div>
+                  </div>
+                </div>
+
+                {/* 운동 목록 */}
+                <h3 style={{ marginBottom: '15px', color: '#555' }}>
+                  운동 상세
+                </h3>
+                <div style={{ display: 'grid', gap: '15px' }}>
                   {result.llm_result.ai_recommended_routine.items?.map(
-                    (item, idx) => {
-                      const getDifficultyLabel = (diff) => {
-                        if (diff <= 2) return '하';
-                        if (diff === 3) return '중';
-                        return '상';
-                      };
-
-                      return (
-                        <tr
-                          key={idx}
+                    (item, index) => (
+                      <div
+                        key={index}
+                        style={{
+                          background: '#f8f9fa',
+                          border: '2px solid #e9ecef',
+                          borderRadius: '12px',
+                          padding: '20px',
+                        }}
+                      >
+                        <div
                           style={{
-                            background: idx % 2 ? '#1e272e' : '#2c3e50',
+                            display: 'flex',
+                            justifyContent: 'space-between',
+                            alignItems: 'center',
+                            marginBottom: '12px',
                           }}
                         >
-                          <td
+                          <h4
                             style={{
-                              padding: '12px',
-                              border: '1px solid #444',
+                              fontSize: '18px',
+                              fontWeight: 'bold',
+                              color: '#333',
+                              margin: 0,
+                            }}
+                          >
+                            {index + 1}.{' '}
+                            {exerciseNameKo[item.exercise_name] ||
+                              item.exercise_name}
+                          </h4>
+                          <span
+                            style={{
+                              background: '#667eea',
+                              color: 'white',
+                              padding: '6px 12px',
+                              borderRadius: '20px',
+                              fontSize: '12px',
                               fontWeight: 'bold',
                             }}
                           >
-                            {exerciseNameKo[item.exercise_name] ??
-                              item.exercise_name}
-                          </td>
+                            MET {item.met}
+                          </span>
+                        </div>
 
-                          <td
-                            style={{
-                              padding: '12px',
-                              border: '1px solid #444',
-                              textAlign: 'center',
-                            }}
-                          >
-                            {getDifficultyLabel(item.difficulty)}
-                          </td>
-
-                          <td
-                            style={{
-                              padding: '12px',
-                              border: '1px solid #444',
-                              textAlign: 'center',
-                            }}
-                          >
-                            {item.met}
-                          </td>
-
-                          <td
-                            style={{
-                              padding: '12px',
-                              border: '1px solid #444',
-                              textAlign: 'center',
-                            }}
-                          >
-                            {secToMinSec(item.duration_sec)}
-                          </td>
-
-                          <td
-                            style={{
-                              padding: '12px',
-                              border: '1px solid #444',
-                              textAlign: 'center',
-                            }}
-                          >
-                            {secToMinSec(item.rest_sec)}
-                          </td>
-
-                          <td
-                            style={{
-                              padding: '12px',
-                              border: '1px solid #444',
-                              textAlign: 'center',
-                            }}
-                          >
-                            {item.set_count}회
-                          </td>
-                        </tr>
-                      );
-                    }
+                        <div
+                          style={{
+                            display: 'grid',
+                            gridTemplateColumns:
+                              'repeat(auto-fit, minmax(100px, 1fr))',
+                            gap: '10px',
+                            color: '#666',
+                          }}
+                        >
+                          <div>
+                            <span style={{ fontWeight: '600' }}>세트:</span>{' '}
+                            {item.set_count}세트
+                          </div>
+                          <div>
+                            <span style={{ fontWeight: '600' }}>운동:</span>{' '}
+                            {item.duration_sec}초
+                          </div>
+                          <div>
+                            <span style={{ fontWeight: '600' }}>휴식:</span>{' '}
+                            {item.rest_sec}초
+                          </div>
+                        </div>
+                      </div>
+                    )
                   )}
-                </tbody>
-              </table>
-            </div>
-          ) : (
-            <div
-              style={{
-                padding: '20px',
-                background: '#c0392b',
-                borderRadius: '8px',
-              }}
-            >
-              ❌ 운동 루틴을 생성하지 못했습니다.
-            </div>
-          )}
-        </div>
-      )}
+                </div>
+              </div>
+            )}
+          </div>
+        )}
+      </div>
     </div>
   );
 }
